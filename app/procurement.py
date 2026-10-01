@@ -44,6 +44,20 @@ class PurchasePlan:
 DEFAULT_SHIPPING = Decimal("500")
 
 
+def provider_shipping_estimate(
+    provider: str,
+    subtotal: Decimal,
+    *,
+    shipping_fee: Decimal = DEFAULT_SHIPPING,
+    free_threshold: Decimal = Decimal("10000"),
+    provider_rules: dict[str, ProviderCommercialRule] | None = None,
+) -> Decimal:
+    rule = provider_rules.get(provider.casefold()) if provider_rules else None
+    effective_fee = rule.shipping_fee if rule else shipping_fee
+    effective_threshold = rule.free_threshold if rule else free_threshold
+    return Decimal("0") if subtotal >= effective_threshold else effective_fee
+
+
 def _provider_shipping(
     provider: str,
     subtotal: Decimal,
@@ -52,16 +66,12 @@ def _provider_shipping(
     free_threshold: Decimal = Decimal("10000"),
     provider_rules: dict[str, ProviderCommercialRule] | None = None,
 ) -> Decimal:
-    rule = None
-    if provider_rules:
-        rule = provider_rules.get(provider.casefold())
-
-    effective_fee = rule.shipping_fee if rule else shipping_fee
-    effective_threshold = rule.free_threshold if rule else free_threshold
-    return (
-        Decimal("0")
-        if subtotal >= effective_threshold
-        else effective_fee
+    return provider_shipping_estimate(
+        provider,
+        subtotal,
+        shipping_fee=shipping_fee,
+        free_threshold=free_threshold,
+        provider_rules=provider_rules,
     )
 
 
