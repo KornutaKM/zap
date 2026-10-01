@@ -15,3 +15,7 @@ def test_unknown_phrase_is_not_vehicle():
 
 def test_brand_requires_model():
     assert parse_vehicle_text("BMW") is None
+
+
+def test_vw_alias_is_recognized():
+    assert parse_vehicle_text("VW Tiguan") == ("VW", "Tiguan")
