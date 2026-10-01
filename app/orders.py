@@ -6,6 +6,7 @@ from app.db import (
     append_order_event,
     attach_delivery_snapshot_to_order,
     create_customer_order,
+    ensure_order_case,
     get_customer_order,
     replace_order_totals,
     replace_supplier_group_totals,
@@ -271,6 +272,16 @@ async def revalidate_order(
             "needs_attention",
             message="Не все позиции подтверждены у выбранных поставщиков.",
         )
+        await ensure_order_case(
+            user_id,
+            order_id,
+            case_type="availability",
+            summary=(
+                "После повторной проверки часть позиций недоступна у выбранных "
+                "поставщиков."
+            ),
+            priority="urgent",
+        )
     else:
         item_total = sum(
             (values[0] for values in new_group_totals.values()),
@@ -345,12 +356,20 @@ async def confirm_revalidated_prices(
         return order
 
     if any(not line.in_stock for line in lines):
-        return await update_order_status(
+        updated = await update_order_status(
             user_id,
             order_id,
             "needs_attention",
             message="Нельзя подтвердить цены: часть позиций недоступна.",
         )
+        await ensure_order_case(
+            user_id,
+            order_id,
+            case_type="availability",
+            summary="Часть позиций недоступна после изменения цены.",
+            priority="urgent",
+        )
+        return updated
 
     for line in lines:
         await update_order_line_confirmation(
@@ -539,12 +558,21 @@ async def checkout_ready_order(
         target_status = "checkout_pending"
         message = "Заказ передан поставщикам и ожидает подтверждения."
 
-    return await update_order_status(
+    updated_order = await update_order_status(
         user_id,
         order_id,
         target_status,
         message=message,
     )
+    if target_status in {"needs_attention", "partially_placed"}:
+        await ensure_order_case(
+            user_id,
+            order_id,
+            case_type="checkout",
+            summary=message,
+            priority="urgent",
+        )
+    return updated_order
 
 
 async def refresh_order_checkout_status(
@@ -790,9 +818,18 @@ async def request_external_order_cancellation(
             else "Поставщик не подтвердил отмену заказа."
         )
 
-    return await update_order_status(
+    updated_order = await update_order_status(
         user_id,
         order_id,
         target,
         message=message,
     )
+    if target == "cancel_requires_attention":
+        await ensure_order_case(
+            user_id,
+            order_id,
+            case_type="cancellation",
+            summary=message,
+            priority="urgent",
+        )
+    return updated_order
