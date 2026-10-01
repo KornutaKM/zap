@@ -9,6 +9,7 @@ from aiogram.types import (
 
 from app.catalog import get_children, get_node
 from app.domain import Offer, PartCandidate, Vehicle
+from app.service_kits import BuiltKit, SERVICE_KITS
 from app.vehicle_catalog import VehicleGeneration
 
 BTN_SEARCH = "🔎 Найти запчасть"
@@ -179,3 +180,53 @@ def candidate_detail_text(candidate: PartCandidate) -> str:
         )
 
     return "\n".join(lines)
+
+
+def service_kits_keyboard() -> InlineKeyboardMarkup:
+    rows = [
+        [
+            InlineKeyboardButton(
+                text=kit.title,
+                callback_data=f"kit:{kit.id}",
+            )
+        ]
+        for kit in SERVICE_KITS.values()
+    ]
+    rows.append([InlineKeyboardButton(text="📚 Отдельные позиции ТО", callback_data="cat:service")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def built_kit_text(built: BuiltKit) -> str:
+    lines = [
+        f"<b>{escape(built.kit.title)}</b>",
+        escape(built.kit.description),
+        "",
+    ]
+
+    for index, item in enumerate(built.items, start=1):
+        candidate = item.candidate
+        price = f"{candidate.min_price:,.0f}".replace(",", " ")
+        lines.append(
+            f"{index}. <b>{escape(candidate.brand)}</b> · "
+            f"<code>{escape(candidate.article)}</code>\n"
+            f"   {escape(item.query)} — от {price} ₽"
+        )
+
+    total = f"{built.total_price:,.0f}".replace(",", " ")
+    lines.extend(
+        [
+            "",
+            f"Ориентировочно: <b>{total} ₽</b>",
+            f"Собрать можно от {built.max_delivery_days} дн.",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def built_kit_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🛠 Другой комплект", callback_data="action:kits")],
+            [InlineKeyboardButton(text="📚 Каталог ТО", callback_data="cat:service")],
+        ]
+    )
