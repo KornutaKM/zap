@@ -901,8 +901,26 @@ async def record_price_observations(offers: list[Offer]) -> int:
     if not offers:
         return 0
 
+    added = 0
     async with Session() as session:
         for offer in offers:
+            latest = await session.scalar(
+                select(PriceHistoryRow)
+                .where(
+                    PriceHistoryRow.provider == offer.provider,
+                    PriceHistoryRow.brand == offer.brand,
+                    PriceHistoryRow.article == offer.article,
+                )
+                .order_by(PriceHistoryRow.id.desc())
+                .limit(1)
+            )
+            if (
+                latest is not None
+                and Decimal(str(latest.price)) == offer.price
+                and latest.delivery_days == offer.delivery_days
+            ):
+                continue
+
             session.add(
                 PriceHistoryRow(
                     provider=offer.provider,
@@ -912,8 +930,12 @@ async def record_price_observations(offers: list[Offer]) -> int:
                     delivery_days=offer.delivery_days,
                 )
             )
-        await session.commit()
-        return len(offers)
+            await session.flush()
+            added += 1
+
+        if added:
+            await session.commit()
+        return added
 
 
 async def list_price_history(
