@@ -1592,7 +1592,13 @@ async def attach_delivery_snapshot_to_order(
         if row is None:
             return None
 
-        if row.status not in {"draft", "ready", "price_changed", "needs_attention"}:
+        if row.status not in {
+            "draft",
+            "ready",
+            "price_changed",
+            "needs_attention",
+            "needs_delivery",
+        }:
             return _to_customer_order(row)
 
         row.delivery_profile_id = delivery_profile_id
