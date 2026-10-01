@@ -26,7 +26,11 @@ async def run_webhook(bot: Bot, dispatcher: Dispatcher, settings) -> None:
     webhook_path = normalize_webhook_path(settings.webhook_path)
 
     app = web.Application()
-    app.router.add_get("/healthz", lambda request: web.Response(text="ok"))
+
+    async def healthz(request):
+        return web.Response(text="ok")
+
+    app.router.add_get("/healthz", healthz)
 
     handler = SimpleRequestHandler(
         dispatcher=dispatcher,
@@ -36,12 +40,6 @@ async def run_webhook(bot: Bot, dispatcher: Dispatcher, settings) -> None:
     handler.register(app, path=webhook_path)
     setup_application(app, dispatcher, bot=bot)
 
-    await bot.set_webhook(
-        webhook_url,
-        secret_token=settings.webhook_secret_token,
-        drop_pending_updates=False,
-    )
-
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(
@@ -49,9 +47,14 @@ async def run_webhook(bot: Bot, dispatcher: Dispatcher, settings) -> None:
         host=settings.webhook_host,
         port=settings.webhook_port,
     )
-    await site.start()
 
     try:
+        await site.start()
+        await bot.set_webhook(
+            webhook_url,
+            secret_token=settings.webhook_secret_token,
+            drop_pending_updates=False,
+        )
         await asyncio.Event().wait()
     finally:
         await runner.cleanup()
