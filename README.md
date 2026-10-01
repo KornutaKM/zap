@@ -388,11 +388,125 @@ app/
 ├── external_fitment.py   generic HTTP fitment adapter
 ├── providers.py          provider contract + demo market
 ├── external_provider.py  generic HTTP price/stock adapter
+├── bootstrap.py          shared provider/service bootstrap
+├── cache_backend.py      memory/Redis search cache
+├── rate_limit.py         memory/Redis request limiting
+├── middleware.py         Telegram middleware
 ├── search_service.py     aggregation/cache/timeout/ranking
 ├── service_kits.py       service kits
 ├── price_alerts.py       price monitoring logic
+├── alert_worker.py       reusable alert worker loop
+├── worker.py             standalone background process
+├── health.py             DB/Redis readiness
+├── db_init.py            schema initialization process
 └── observability.py      JSON logging + secret redaction
 ```
+
+## Production deployment: PostgreSQL + Redis
+
+Для локальной разработки по-прежнему достаточно:
+
+```bash
+docker compose up -d --build
+```
+
+Этот режим использует SQLite, in-memory cache/rate limiting и embedded price-alert worker.
+
+Для серверного режима добавлен отдельный topology:
+
+```text
+PostgreSQL ─┐
+            ├─ db-init ─→ bot
+Redis ──────┤             │
+            └────────────→ worker
+```
+
+Запуск:
+
+```bash
+cp .env.production.example .env
+# заполнить BOT_TOKEN, POSTGRES_PASSWORD и реальные API credentials
+
+docker compose -f docker-compose.prod.yml up -d --build
+```
+
+В `docker-compose.prod.yml`:
+
+- `postgres` — постоянное пользовательское состояние;
+- `redis` — общий search cache и rate limiting;
+- `db-init` — инициализирует схему до запуска приложений;
+- `bot` — Telegram polling/webhook процесс;
+- `worker` — независимая проверка price alerts.
+
+Production compose автоматически выставляет:
+
+```env
+SEARCH_CACHE_BACKEND=redis
+RATE_LIMIT_BACKEND=redis
+PRICE_ALERT_WORKER_MODE=external
+```
+
+Поэтому bot и worker используют одинаковый Redis-кэш, но только worker выполняет фоновые price checks.
+
+### Redis cache
+
+Search cache имеет два backend-а:
+
+```env
+SEARCH_CACHE_BACKEND=memory
+# или
+SEARCH_CACHE_BACKEND=redis
+REDIS_URL=redis://redis:6379/0
+```
+
+Cache key учитывает автомобиль, модификацию и нормализованный запрос. Redis payload содержит только коммерческие offers; применимость накладывается после чтения кэша.
+
+### Rate limiting
+
+Telegram messages и callbacks проходят общий middleware:
+
+```env
+RATE_LIMIT_BACKEND=memory
+RATE_LIMIT_REQUESTS=60
+RATE_LIMIT_WINDOW_SECONDS=60
+```
+
+В production используется Redis backend, поэтому лимит общий для нескольких экземпляров приложения.
+
+### Price worker
+
+Локально:
+
+```env
+PRICE_ALERT_WORKER_MODE=embedded
+```
+
+На сервере:
+
+```env
+PRICE_ALERT_WORKER_MODE=external
+```
+
+и запускается:
+
+```bash
+python -m app.worker
+```
+
+Это исключает двойную проверку одних и тех же alerts при горизонтальном масштабировании Telegram-процесса.
+
+### Health / readiness
+
+Webhook HTTP server предоставляет:
+
+```text
+GET /healthz  — процесс жив
+GET /readyz   — доступны БД и Redis
+```
+
+`/readyz` возвращает HTTP 503, если критичная инфраструктура недоступна.
+
+Команда Telegram `/status` также показывает DB/Redis readiness, backend кэша, worker mode и health каждого provider без вывода credentials.
 
 ## CI
 
