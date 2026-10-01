@@ -199,9 +199,9 @@ async def _migrate_legacy_vehicles() -> None:
 
 
 async def init_db() -> None:
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-    await _migrate_garage_vehicle_columns()
+    from app.migrations import upgrade_database
+
+    await upgrade_database()
     await _migrate_legacy_vehicles()
 
 
