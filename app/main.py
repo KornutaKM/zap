@@ -11,7 +11,7 @@ from aiogram.types import BotCommand, CallbackQuery, Message
 
 from app.catalog import get_node
 from app.config import settings
-from app.db import add_favorite, delete_vehicle, get_search_history_item, get_vehicle, init_db, list_favorites, list_recent_searches, list_vehicles, record_search, remove_favorite, save_vehicle, set_active_vehicle
+from app.db import add_favorite, delete_vehicle, get_search_history_item, get_vehicle, init_db, list_favorites, list_recent_searches, list_vehicles, record_search, remove_favorite, save_vehicle, set_active_vehicle, set_vehicle_modification
 from app.domain import Vehicle
 from app.providers import AutodocProvider, ExistProvider, MockProvider
 from app.query_parser import parse_search_query
@@ -36,17 +36,20 @@ from app.ui import (
     generation_keyboard,
     history_keyboard,
     main_menu,
+    modification_keyboard,
     candidate_detail_text,
     candidate_text,
     part_detail_keyboard,
     parts_results_keyboard,
     service_kits_keyboard,
+    vehicle_modification_text,
     vehicle_summary,
 )
 from app.search_service import PartsSearchService, deserialize_candidate, serialize_candidate
 from app.service_kits import build_service_kit, get_service_kit
 from app.vehicle_catalog import find_generations, get_generation
 from app.vehicle_parser import parse_vehicle_text
+from app.vehicle_resolver import find_modifications, get_modification, vehicle_is_precise
 
 
 class Garage(StatesGroup):
@@ -129,7 +132,11 @@ async def show_catalog_root(
         "Общий каталог модели. Перед покупкой конкретной детали нужно уточнить "
         "год, двигатель или VIN."
         if source == "temporary"
-        else "Каталог пока демонстрационный. Точную применимость по VIN подключим следующим этапом."
+        else (
+            "Модификация уточнена; demo-каталог может использовать двигатель и привод."
+            if vehicle_is_precise(Vehicle(brand, model, year or 0, vin))
+            else "Модификация пока не уточнена. Для точной применимости выберите её в гараже."
+        )
     )
 
     await message.answer(
@@ -318,7 +325,8 @@ async def garage(message: Message, state: FSMContext):
     if vehicles and current:
         await message.answer(
             "<b>Мои автомобили</b>\n"
-            "Активный автомобиль отмечен галочкой. Выберите другой или добавьте новый.",
+            f"Активный: {vehicle_modification_text(current)}\n\n"
+            "Выберите другой автомобиль, уточните модификацию или добавьте новый.",
             reply_markup=garage_keyboard(vehicles, current.id),
         )
         return
@@ -356,6 +364,76 @@ async def garage_set_callback(callback: CallbackQuery, state: FSMContext):
     vehicles = await list_vehicles(callback.from_user.id)
     await callback.message.edit_text(
         f"Активный автомобиль:\n{vehicle_summary(vehicle)}",
+        reply_markup=garage_keyboard(vehicles, vehicle.id),
+    )
+
+
+@dp.callback_query(F.data.startswith("garage:resolve:"))
+async def garage_resolve_callback(callback: CallbackQuery):
+    await callback.answer()
+    if callback.message is None:
+        return
+
+    vehicle_id = int((callback.data or "").rsplit(":", 1)[1])
+    vehicles = await list_vehicles(callback.from_user.id)
+    vehicle = next((item for item in vehicles if item.id == vehicle_id), None)
+    if vehicle is None:
+        await callback.message.answer("Автомобиль не найден.")
+        return
+
+    modifications = find_modifications(vehicle)
+    if not modifications:
+        await callback.message.answer(
+            "Для этой модели в demo-resolver пока нет списка модификаций. "
+            "Позже этот шаг будет получать данные из внешнего каталога применимости."
+        )
+        return
+
+    await callback.message.edit_text(
+        f"{vehicle_summary(vehicle)}\n"
+        f"Сейчас: <b>{vehicle_modification_text(vehicle)}</b>\n\n"
+        "Выберите точную модификацию:",
+        reply_markup=modification_keyboard(vehicle_id, modifications),
+    )
+
+
+@dp.callback_query(F.data.startswith("mod:"))
+async def garage_modification_callback(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    if callback.message is None:
+        return
+
+    parts = (callback.data or "").split(":", 2)
+    if len(parts) != 3:
+        await callback.message.answer("Некорректная модификация.")
+        return
+
+    vehicle_id = int(parts[1])
+    modification = get_modification(parts[2])
+    if modification is None:
+        await callback.message.answer("Модификация не найдена.")
+        return
+
+    vehicle = await set_vehicle_modification(
+        callback.from_user.id,
+        vehicle_id,
+        generation_code=modification.generation_code,
+        engine_code=modification.engine,
+        fuel=modification.fuel,
+        drive=modification.drive,
+        power_hp=modification.power_hp,
+        modification_key=modification.key,
+    )
+    if vehicle is None:
+        await callback.message.answer("Автомобиль не найден.")
+        return
+
+    await state.clear()
+    vehicles = await list_vehicles(callback.from_user.id)
+    await callback.message.edit_text(
+        f"Модификация сохранена.\n\n"
+        f"{vehicle_summary(vehicle)}\n"
+        f"<b>{vehicle_modification_text(vehicle)}</b>",
         reply_markup=garage_keyboard(vehicles, vehicle.id),
     )
 
@@ -481,9 +559,18 @@ async def garage_vin(message: Message, state: FSMContext):
     )
     await state.clear()
 
+    modifications = find_modifications(vehicle)
+    extra = (
+        "\n\nДля этой модели найдено несколько модификаций. "
+        "Откройте «Мой автомобиль» → «Уточнить модификацию»."
+        if len(modifications) > 1
+        else ""
+    )
     await message.answer(
         "Автомобиль сохранён.\n\n"
-        f"{vehicle_summary(vehicle)}\n\n"
+        f"{vehicle_summary(vehicle)}\n"
+        f"{vehicle_modification_text(vehicle)}"
+        f"{extra}\n\n"
         "Теперь можно открыть каталог или сразу написать нужную деталь.",
         reply_markup=main_menu(True),
     )
