@@ -16,6 +16,23 @@ class CheckoutLine:
 
 
 @dataclass(frozen=True, slots=True)
+class CheckoutRecipient:
+    full_name: str
+    phone: str
+    email: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class CheckoutDelivery:
+    country: str
+    city: str
+    address_line1: str
+    postal_code: str | None = None
+    address_line2: str | None = None
+    comment: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class CheckoutRequest:
     order_id: int
     group_id: int
@@ -23,6 +40,8 @@ class CheckoutRequest:
     total: Decimal
     lines: tuple[CheckoutLine, ...]
     fallback_url: str | None = None
+    recipient: CheckoutRecipient | None = None
+    delivery: CheckoutDelivery | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,6 +60,9 @@ class CheckoutAdapter(Protocol):
         ...
 
     async def get_status(self, external_order_id: str) -> CheckoutResult:
+        ...
+
+    async def cancel_checkout(self, external_order_id: str) -> CheckoutResult:
         ...
 
 
@@ -67,6 +89,14 @@ class DeeplinkCheckoutAdapter:
             external_order_id=external_order_id,
         )
 
+    async def cancel_checkout(self, external_order_id: str) -> CheckoutResult:
+        return CheckoutResult(
+            status="unknown",
+            mode="deeplink",
+            external_order_id=external_order_id,
+            error="Ручной заказ нельзя отменить без API поставщика.",
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class HttpCheckoutConfig:
@@ -74,11 +104,13 @@ class HttpCheckoutConfig:
     base_url: str
     create_path: str = "/orders"
     status_path: str = "/orders/{external_order_id}"
+    cancel_path: str = "/orders/{external_order_id}/cancel"
     api_key: str | None = None
     api_key_header: str = "Authorization"
     auth_scheme: str = "Bearer"
     allow_http: bool = False
     timeout_seconds: float = 10.0
+    extra_payload: dict | None = None
 
     def validate(self) -> None:
         parsed = urlparse(self.base_url)
@@ -110,6 +142,13 @@ class GenericHttpCheckoutAdapter:
             self.config.base_url.rstrip("/") + "/",
             self.config.create_path.lstrip("/"),
         )
+        if request.recipient is None or request.delivery is None:
+            return CheckoutResult(
+                status="failed",
+                mode="api",
+                error="delivery_required",
+            )
+
         payload = {
             "idempotency_key": f"zap:{request.order_id}:{request.group_id}",
             "order_id": request.order_id,
@@ -117,6 +156,20 @@ class GenericHttpCheckoutAdapter:
             "provider": request.provider,
             "currency": "RUB",
             "total": str(request.total),
+            "recipient": {
+                "full_name": request.recipient.full_name,
+                "phone": request.recipient.phone,
+                "email": request.recipient.email,
+            },
+            "delivery_address": {
+                "country": request.delivery.country,
+                "city": request.delivery.city,
+                "address_line1": request.delivery.address_line1,
+                "address_line2": request.delivery.address_line2,
+                "postal_code": request.delivery.postal_code,
+                "comment": request.delivery.comment,
+            },
+            "provider_context": dict(self.config.extra_payload or {}),
             "items": [
                 {
                     "brand": line.brand,
@@ -159,6 +212,7 @@ class GenericHttpCheckoutAdapter:
             "completed",
             "cancelled",
             "failed",
+            "cancel_pending",
         } else "pending"
 
         return CheckoutResult(
@@ -211,7 +265,60 @@ class GenericHttpCheckoutAdapter:
             "completed",
             "cancelled",
             "failed",
+            "cancel_pending",
         } else "unknown"
+        return CheckoutResult(
+            status=status,
+            mode="api",
+            external_order_id=external_order_id,
+            checkout_url=(
+                str(data["checkout_url"])
+                if isinstance(data.get("checkout_url"), str)
+                and str(data["checkout_url"]).startswith(("https://", "http://"))
+                else None
+            ),
+        )
+
+
+    async def cancel_checkout(self, external_order_id: str) -> CheckoutResult:
+        path = self.config.cancel_path.format(
+            external_order_id=quote(external_order_id, safe="")
+        )
+        url = urljoin(
+            self.config.base_url.rstrip("/") + "/",
+            path.lstrip("/"),
+        )
+        payload = {
+            "idempotency_key": f"zap:cancel:{external_order_id}",
+        }
+        try:
+            timeout = aiohttp.ClientTimeout(total=max(1.0, self.config.timeout_seconds))
+            async with aiohttp.ClientSession(headers=self._headers(), timeout=timeout) as session:
+                async with session.post(url, json=payload) as response:
+                    response.raise_for_status()
+                    data = await response.json(content_type=None)
+        except (aiohttp.ClientError, TimeoutError, ValueError) as exc:
+            return CheckoutResult(
+                status="unknown",
+                mode="api",
+                external_order_id=external_order_id,
+                error=type(exc).__name__,
+            )
+
+        if not isinstance(data, dict):
+            return CheckoutResult(
+                status="unknown",
+                mode="api",
+                external_order_id=external_order_id,
+                error="invalid_payload",
+            )
+
+        raw_status = str(data.get("status") or "cancel_pending").casefold()
+        status = raw_status if raw_status in {
+            "cancelled",
+            "cancel_pending",
+            "failed",
+        } else "cancel_pending"
         return CheckoutResult(
             status=status,
             mode="api",
