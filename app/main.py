@@ -20,6 +20,7 @@ from app.alert_worker import price_alert_loop
 from app.health import readiness
 from app.middleware import RateLimitMiddleware
 from app.observability import configure_logging, log_event
+from app.commercial_rules import parse_provider_rules
 from app.procurement import PurchaseRequest, deserialize_purchase_plan, optimize_purchase, serialize_purchase_plan
 from app.query_parser import parse_search_query
 from app.rate_limit import build_rate_limiter
@@ -102,6 +103,9 @@ providers = services.providers
 fitment_catalog = services.fitment_catalog
 search_service = services.search_service
 vehicle_resolver = services.vehicle_resolver
+provider_commercial_rules = parse_provider_rules(
+    app_settings.procurement_provider_rules_json
+)
 
 dp = Dispatcher()
 
@@ -1336,6 +1340,7 @@ async def shopping_optimize_callback(callback: CallbackQuery, state: FSMContext)
         candidate_map,
         shipping_fee=app_settings.procurement_shipping_fee,
         free_threshold=app_settings.procurement_free_shipping_threshold,
+        provider_rules=provider_commercial_rules,
     )
     if not plans:
         await callback.message.edit_text(
