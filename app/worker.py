@@ -17,6 +17,9 @@ async def main() -> None:
     configure_logging(app_settings.log_level)
     logger = logging.getLogger("zap.worker")
 
+    if not app_settings.bot_token.strip():
+        raise RuntimeError("BOT_TOKEN is required to run the price alert worker")
+
     if not app_settings.price_alerts_enabled:
         log_event(
             logger,
