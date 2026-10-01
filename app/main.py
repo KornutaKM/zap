@@ -2072,6 +2072,9 @@ async def free_text(message: Message, state: FSMContext):
 
 
 async def main():
+    if not app_settings.bot_token.strip():
+        raise RuntimeError("BOT_TOKEN is required to run the Telegram bot")
+
     await init_db()
     log_event(
         logger,
