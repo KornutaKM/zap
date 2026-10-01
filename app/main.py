@@ -84,7 +84,9 @@ async def set_catalog_context(
     year: int | None,
     vin: str | None,
     source: str,
+    vehicle_details: Vehicle | None = None,
 ) -> None:
+    details = vehicle_details
     await state.update_data(
         catalog_vehicle={
             "brand": brand,
@@ -92,6 +94,13 @@ async def set_catalog_context(
             "year": year,
             "vin": vin,
             "source": source,
+            "id": details.id if details else None,
+            "generation_code": details.generation_code if details else None,
+            "engine": details.engine if details else None,
+            "fuel": details.fuel if details else None,
+            "drive": details.drive if details else None,
+            "power_hp": details.power_hp if details else None,
+            "modification_key": details.modification_key if details else None,
         }
     )
 
@@ -109,6 +118,13 @@ async def get_catalog_vehicle(
                 model=ctx["model"],
                 year=ctx.get("year") or 0,
                 vin=ctx.get("vin"),
+                id=ctx.get("id"),
+                generation_code=ctx.get("generation_code"),
+                engine=ctx.get("engine"),
+                fuel=ctx.get("fuel"),
+                drive=ctx.get("drive"),
+                power_hp=ctx.get("power_hp"),
+                modification_key=ctx.get("modification_key"),
             ),
             ctx.get("source", "temporary"),
         )
@@ -126,15 +142,24 @@ async def show_catalog_root(
     vin: str | None,
     source: str,
 ) -> None:
-    await set_catalog_context(state, brand, model, year, vin, source)
+    saved_vehicle = await get_vehicle(message.from_user.id) if source == "garage" else None
+    await set_catalog_context(
+        state,
+        brand,
+        model,
+        year,
+        vin,
+        source,
+        vehicle_details=saved_vehicle,
+    )
     year_text = f" · {year}" if year else ""
     note = (
         "Общий каталог модели. Перед покупкой конкретной детали нужно уточнить "
         "год, двигатель или VIN."
         if source == "temporary"
         else (
-            "Модификация уточнена; demo-каталог может использовать двигатель и привод."
-            if vehicle_is_precise(Vehicle(brand, model, year or 0, vin))
+            "Модификация уточнена: применимость можно проверять по двигателю и приводу."
+            if saved_vehicle and vehicle_is_precise(saved_vehicle)
             else "Модификация пока не уточнена. Для точной применимости выберите её в гараже."
         )
     )
@@ -633,6 +658,7 @@ async def service_shortcut(message: Message, state: FSMContext):
         vehicle.year,
         vehicle.vin,
         "garage",
+        vehicle_details=vehicle,
     )
     await message.answer(
         f"{vehicle_summary(vehicle)}\n\n"
