@@ -1329,7 +1329,12 @@ async def shopping_optimize_callback(callback: CallbackQuery, state: FSMContext)
             continue
         candidate_map[(item.brand.casefold(), item.article.casefold())] = candidate
 
-    plans = optimize_purchase(requests, candidate_map)
+    plans = optimize_purchase(
+        requests,
+        candidate_map,
+        shipping_fee=app_settings.procurement_shipping_fee,
+        free_threshold=app_settings.procurement_free_shipping_threshold,
+    )
     if not plans:
         await callback.message.edit_text(
             "Не удалось получить актуальные предложения для списка. "
