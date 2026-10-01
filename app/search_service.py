@@ -4,6 +4,7 @@ import time
 
 from dataclasses import dataclass, replace
 
+from app.cache_backend import MemorySearchCache, SearchCache, build_cache_key
 from app.domain import Offer, PartCandidate, Vehicle, group_offers, rank_parts
 from app.fitment import FitmentCatalog, FitmentResolution
 from app.observability import log_event
@@ -42,6 +43,7 @@ class PartsSearchService:
         fitment_catalog: FitmentCatalog | None = None,
         circuit_failure_threshold: int = 3,
         circuit_cooldown_seconds: float = 60.0,
+        cache: SearchCache | None = None,
     ) -> None:
         self.providers = providers
         self.cache_ttl_seconds = cache_ttl_seconds
@@ -49,21 +51,23 @@ class PartsSearchService:
         self.fitment_catalog = fitment_catalog
         self.circuit_failure_threshold = max(1, circuit_failure_threshold)
         self.circuit_cooldown_seconds = max(1.0, circuit_cooldown_seconds)
-        self._cache: dict[tuple, tuple[float, tuple[Offer, ...]]] = {}
+        self.cache = cache or MemorySearchCache()
         self._provider_health: dict[int, ProviderHealth] = {
             id(provider): ProviderHealth(name=provider.name)
             for provider in providers
         }
 
     @staticmethod
-    def _cache_key(vehicle: Vehicle | None, query: str) -> tuple:
-        return (
+    def _cache_key(vehicle: Vehicle | None, query: str) -> str:
+        parts = (
             vehicle.brand.casefold() if vehicle else None,
             vehicle.model.casefold() if vehicle else None,
             vehicle.year if vehicle else None,
             vehicle.vin if vehicle else None,
+            vehicle.modification_key if vehicle else None,
             " ".join(query.casefold().split()),
         )
+        return build_cache_key(parts)
 
     async def _provider_search(
         self,
@@ -140,10 +144,9 @@ class PartsSearchService:
 
     async def raw_offers(self, vehicle: Vehicle | None, query: str) -> list[Offer]:
         key = self._cache_key(vehicle, query)
-        now = time.monotonic()
-        cached = self._cache.get(key)
-        if cached is not None and cached[0] > now:
-            return list(cached[1])
+        cached = await self.cache.get(key)
+        if cached is not None:
+            return cached
 
         provider_vehicle = vehicle or Vehicle("Автомобиль", "не выбран", 0, None)
         batches = await asyncio.gather(
@@ -154,10 +157,7 @@ class PartsSearchService:
         )
 
         offers = [offer for batch in batches for offer in batch]
-        self._cache[key] = (
-            now + self.cache_ttl_seconds,
-            tuple(offers),
-        )
+        await self.cache.set(key, offers, self.cache_ttl_seconds)
         return offers
 
     async def parts(self, vehicle: Vehicle | None, query: str) -> list[PartCandidate]:
@@ -214,8 +214,8 @@ class PartsSearchService:
             ),
         )
 
-    def clear_cache(self) -> None:
-        self._cache.clear()
+    async def clear_cache(self) -> None:
+        await self.cache.clear()
 
     def provider_statuses(self) -> list[dict[str, object]]:
         now = time.monotonic()
