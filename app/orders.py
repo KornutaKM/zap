@@ -145,6 +145,7 @@ async def revalidate_order(
     for group in groups:
         provider_subtotal = Decimal("0")
         group_missing = False
+        group_price_changed = False
         for line in lines_by_group.get(group.id, []):
             candidates = await search_service.parts(vehicle, line.article)
             requested_article = _article_key(line.article)
@@ -194,6 +195,7 @@ async def revalidate_order(
 
             price_changed = offer.price != line.unit_price
             if price_changed:
+                group_price_changed = True
                 changed.append(
                     f"{line.brand} {line.article}: "
                     f"{line.unit_price} → {offer.price} ₽ · {group.provider}"
@@ -219,7 +221,7 @@ async def revalidate_order(
                 free_threshold=free_threshold,
                 provider_rules=provider_rules,
             )
-            group_status = "price_changed" if changed else "validated"
+            group_status = "price_changed" if group_price_changed else "ready"
             await replace_supplier_group_totals(
                 order_id,
                 group.id,
