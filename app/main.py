@@ -651,7 +651,6 @@ async def favorites_button(message: Message):
 
 @dp.callback_query(F.data.startswith("favorite:add:"))
 async def favorite_add_callback(callback: CallbackQuery, state: FSMContext):
-    await callback.answer()
     if callback.message is None:
         return
 
@@ -739,7 +738,8 @@ async def search_query(message: Message, state: FSMContext):
     search_data = await state.get_data()
     vehicle, source = await get_catalog_vehicle(state, message.from_user.id)
     without_vehicle = bool(search_data.get("search_without_vehicle"))
-    await state.clear()
+    await state.set_state(None)
+    await state.update_data(search_without_vehicle=False)
 
     if vehicle is None and not without_vehicle:
         await message.answer("Автомобиль не найден.", reply_markup=main_menu(False))
@@ -992,7 +992,7 @@ async def main():
             BotCommand(command="catalog", description="Каталог запчастей"),
             BotCommand(command="search", description="Найти запчасть"),
             BotCommand(command="garage", description="Мой автомобиль"),
-            BotCommand(command="garage_add", description="Добавить или заменить автомобиль"),
+            BotCommand(command="garage_add", description="Добавить автомобиль"),
         ]
     )
     await dp.start_polling(bot)
