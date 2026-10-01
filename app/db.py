@@ -80,7 +80,10 @@ class GarageVehicleRow(Base):
     is_active: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
 
 
-engine = create_async_engine(settings().database_url)
+engine = create_async_engine(
+    settings().database_url,
+    pool_pre_ping=True,
+)
 Session = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
 
 
