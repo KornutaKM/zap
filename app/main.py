@@ -17,8 +17,10 @@ from app.config import settings
 from app.db import add_favorite, create_price_alert, delete_price_alert, delete_vehicle, get_search_history_item, get_vehicle, init_db, list_favorites, list_price_alerts, list_recent_searches, list_vehicles, record_search, remove_favorite, save_vehicle, set_active_vehicle, set_vehicle_modification, update_vehicle_from_resolution
 from app.domain import Vehicle
 from app.alert_worker import price_alert_loop
+from app.middleware import RateLimitMiddleware
 from app.observability import configure_logging, log_event
 from app.query_parser import parse_search_query
+from app.rate_limit import build_rate_limiter
 from app.runtime import run_bot
 from app.ui import (
     BTN_ADD_CAR,
@@ -87,6 +89,15 @@ search_service = services.search_service
 vehicle_resolver = services.vehicle_resolver
 
 dp = Dispatcher()
+
+rate_limiter = build_rate_limiter(
+    app_settings.rate_limit_backend,
+    limit=app_settings.rate_limit_requests,
+    window_seconds=app_settings.rate_limit_window_seconds,
+    redis_url=app_settings.redis_url,
+)
+dp.message.middleware(RateLimitMiddleware(rate_limiter))
+dp.callback_query.middleware(RateLimitMiddleware(rate_limiter))
 
 
 async def set_catalog_context(
