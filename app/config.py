@@ -37,6 +37,7 @@ class Settings(BaseSettings):
     checkout_api_key_header: str = "Authorization"
     checkout_api_auth_scheme: str = "Bearer"
     checkout_api_allow_http: bool = False
+    checkout_api_timeout_seconds: float = 10.0
     demo_provider_enabled: bool = True
     demo_fitment_enabled: bool = True
     fitment_api_enabled: bool = False
