@@ -1384,3 +1384,34 @@ async def replace_order_totals(
         await session.commit()
         await session.refresh(row)
         return _to_customer_order(row)
+
+
+
+async def replace_supplier_group_totals(
+    order_id: int,
+    group_id: int,
+    *,
+    item_total,
+    shipping_total,
+    grand_total,
+    status: str | None = None,
+) -> SupplierOrderGroup | None:
+    async with Session() as session:
+        row = await session.scalar(
+            select(SupplierOrderGroupRow).where(
+                SupplierOrderGroupRow.id == group_id,
+                SupplierOrderGroupRow.order_id == order_id,
+            )
+        )
+        if row is None:
+            return None
+
+        row.item_total = Decimal(str(item_total))
+        row.shipping_total = Decimal(str(shipping_total))
+        row.grand_total = Decimal(str(grand_total))
+        if status is not None:
+            row.status = status
+        row.updated_at = datetime.now(timezone.utc)
+        await session.commit()
+        await session.refresh(row)
+        return _to_supplier_group(row)
