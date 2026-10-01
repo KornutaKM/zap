@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 from app.config import settings
-from app.domain import CustomerOrder, DeliveryProfile, FavoritePart, Offer, OrderEvent, OrderLine, PriceAlert, PriceHistoryPoint, SavedPurchaseQuote, SearchHistoryItem, ShoppingListItem, SupplierOrderGroup, Vehicle
+from app.domain import CustomerOrder, DeliveryProfile, FavoritePart, Offer, OrderCase, OrderCaseNote, OrderEvent, OrderLine, PriceAlert, PriceHistoryPoint, SavedPurchaseQuote, SearchHistoryItem, ShoppingListItem, SupplierOrderGroup, Vehicle
 
 
 class Base(DeclarativeBase):
@@ -189,6 +189,33 @@ class OrderEventRow(Base):
     to_status: Mapped[str | None] = mapped_column(String(40), nullable=True)
     provider: Mapped[str | None] = mapped_column(String(120), nullable=True)
     payload_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+
+class OrderCaseRow(Base):
+    __tablename__ = "order_cases"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    order_id: Mapped[int] = mapped_column(ForeignKey("orders.id"), index=True)
+    telegram_user_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    case_type: Mapped[str] = mapped_column(String(40), index=True)
+    status: Mapped[str] = mapped_column(String(40), default="open", index=True)
+    priority: Mapped[str] = mapped_column(String(20), default="normal", index=True)
+    summary: Mapped[str] = mapped_column(String(500))
+    assigned_operator_user_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True, index=True)
+    resolution: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class OrderCaseNoteRow(Base):
+    __tablename__ = "order_case_notes"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    case_id: Mapped[int] = mapped_column(ForeignKey("order_cases.id"), index=True)
+    author_user_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    author_role: Mapped[str] = mapped_column(String(20))
+    body: Mapped[str] = mapped_column(String(2000))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
 
 
@@ -1497,6 +1524,33 @@ async def list_orders_for_status_monitor(
 
 
 
+def _to_order_case(row: OrderCaseRow) -> OrderCase:
+    return OrderCase(
+        id=row.id,
+        order_id=row.order_id,
+        telegram_user_id=row.telegram_user_id,
+        case_type=row.case_type,
+        status=row.status,
+        priority=row.priority,
+        summary=row.summary,
+        assigned_operator_user_id=row.assigned_operator_user_id,
+        resolution=row.resolution,
+        created_at=row.created_at.isoformat() if row.created_at else None,
+        updated_at=row.updated_at.isoformat() if row.updated_at else None,
+    )
+
+
+def _to_order_case_note(row: OrderCaseNoteRow) -> OrderCaseNote:
+    return OrderCaseNote(
+        id=row.id,
+        case_id=row.case_id,
+        author_user_id=row.author_user_id,
+        author_role=row.author_role,
+        body=row.body,
+        created_at=row.created_at.isoformat() if row.created_at else None,
+    )
+
+
 def _to_delivery_profile(row: DeliveryProfileRow) -> DeliveryProfile:
     return DeliveryProfile(
         id=row.id,
@@ -1621,3 +1675,292 @@ async def attach_delivery_snapshot_to_order(
         await session.commit()
         await session.refresh(row)
         return _to_customer_order(row)
+
+
+
+async def create_order_case(
+    user_id: int,
+    order_id: int,
+    *,
+    case_type: str,
+    summary: str,
+    priority: str = "normal",
+    initial_note: str | None = None,
+    author_role: str = "user",
+    author_user_id: int | None = None,
+) -> OrderCase | None:
+    async with Session() as session:
+        order = await session.scalar(
+            select(CustomerOrderRow).where(
+                CustomerOrderRow.id == order_id,
+                CustomerOrderRow.telegram_user_id == user_id,
+            )
+        )
+        if order is None:
+            return None
+
+        row = OrderCaseRow(
+            order_id=order_id,
+            telegram_user_id=user_id,
+            case_type=case_type[:40],
+            status="open",
+            priority=priority[:20],
+            summary=summary[:500],
+        )
+        session.add(row)
+        await session.flush()
+
+        if initial_note:
+            session.add(
+                OrderCaseNoteRow(
+                    case_id=row.id,
+                    author_user_id=author_user_id,
+                    author_role=author_role[:20],
+                    body=initial_note[:2000],
+                )
+            )
+
+        session.add(
+            OrderEventRow(
+                order_id=order_id,
+                event_type="case_created",
+                message=f"Создан кейс #{row.id}: {case_type}"[:500],
+                to_status=order.status,
+            )
+        )
+        await session.commit()
+        await session.refresh(row)
+        return _to_order_case(row)
+
+
+async def ensure_order_case(
+    user_id: int,
+    order_id: int,
+    *,
+    case_type: str,
+    summary: str,
+    priority: str = "normal",
+) -> OrderCase | None:
+    async with Session() as session:
+        existing = await session.scalar(
+            select(OrderCaseRow)
+            .where(
+                OrderCaseRow.order_id == order_id,
+                OrderCaseRow.telegram_user_id == user_id,
+                OrderCaseRow.case_type == case_type,
+                OrderCaseRow.status.in_(("open", "in_review")),
+            )
+            .order_by(OrderCaseRow.id.desc())
+        )
+        if existing is not None:
+            return _to_order_case(existing)
+
+    return await create_order_case(
+        user_id,
+        order_id,
+        case_type=case_type,
+        summary=summary,
+        priority=priority,
+        author_role="system",
+        author_user_id=None,
+    )
+
+
+async def list_user_order_cases(
+    user_id: int,
+    limit: int = 30,
+) -> list[OrderCase]:
+    async with Session() as session:
+        rows = (
+            await session.scalars(
+                select(OrderCaseRow)
+                .where(OrderCaseRow.telegram_user_id == user_id)
+                .order_by(OrderCaseRow.id.desc())
+                .limit(limit)
+            )
+        ).all()
+        return [_to_order_case(row) for row in rows]
+
+
+async def list_operator_order_cases(
+    *,
+    statuses: tuple[str, ...] = ("open", "in_review"),
+    limit: int = 50,
+) -> list[OrderCase]:
+    async with Session() as session:
+        rows = (
+            await session.scalars(
+                select(OrderCaseRow)
+                .where(OrderCaseRow.status.in_(statuses))
+                .order_by(
+                    OrderCaseRow.priority.desc(),
+                    OrderCaseRow.created_at.asc(),
+                    OrderCaseRow.id.asc(),
+                )
+                .limit(limit)
+            )
+        ).all()
+        return [_to_order_case(row) for row in rows]
+
+
+async def get_order_case(
+    case_id: int,
+) -> tuple[OrderCase, list[OrderCaseNote]] | None:
+    async with Session() as session:
+        row = await session.scalar(
+            select(OrderCaseRow).where(OrderCaseRow.id == case_id)
+        )
+        if row is None:
+            return None
+
+        notes = (
+            await session.scalars(
+                select(OrderCaseNoteRow)
+                .where(OrderCaseNoteRow.case_id == case_id)
+                .order_by(OrderCaseNoteRow.id.asc())
+            )
+        ).all()
+        return (
+            _to_order_case(row),
+            [_to_order_case_note(note) for note in notes],
+        )
+
+
+async def append_order_case_note(
+    case_id: int,
+    *,
+    author_user_id: int | None,
+    author_role: str,
+    body: str,
+) -> OrderCaseNote | None:
+    body = body.strip()
+    if not body:
+        return None
+
+    async with Session() as session:
+        case = await session.scalar(
+            select(OrderCaseRow).where(OrderCaseRow.id == case_id)
+        )
+        if case is None:
+            return None
+
+        note = OrderCaseNoteRow(
+            case_id=case_id,
+            author_user_id=author_user_id,
+            author_role=author_role[:20],
+            body=body[:2000],
+        )
+        case.updated_at = datetime.now(timezone.utc)
+        session.add(note)
+        await session.commit()
+        await session.refresh(note)
+        return _to_order_case_note(note)
+
+
+async def assign_order_case(
+    case_id: int,
+    operator_user_id: int,
+) -> OrderCase | None:
+    async with Session() as session:
+        row = await session.scalar(
+            select(OrderCaseRow).where(OrderCaseRow.id == case_id)
+        )
+        if row is None:
+            return None
+        if row.status == "resolved":
+            return _to_order_case(row)
+
+        row.assigned_operator_user_id = operator_user_id
+        row.status = "in_review"
+        row.updated_at = datetime.now(timezone.utc)
+        session.add(
+            OrderCaseNoteRow(
+                case_id=case_id,
+                author_user_id=operator_user_id,
+                author_role="operator",
+                body="Кейс взят в работу.",
+            )
+        )
+        await session.commit()
+        await session.refresh(row)
+        return _to_order_case(row)
+
+
+async def resolve_order_case(
+    case_id: int,
+    operator_user_id: int,
+    resolution: str,
+) -> OrderCase | None:
+    resolution = resolution.strip()
+    if not resolution:
+        return None
+
+    async with Session() as session:
+        row = await session.scalar(
+            select(OrderCaseRow).where(OrderCaseRow.id == case_id)
+        )
+        if row is None:
+            return None
+
+        row.assigned_operator_user_id = operator_user_id
+        row.status = "resolved"
+        row.resolution = resolution[:1000]
+        row.updated_at = datetime.now(timezone.utc)
+        session.add(
+            OrderCaseNoteRow(
+                case_id=case_id,
+                author_user_id=operator_user_id,
+                author_role="operator",
+                body=f"Резолюция: {resolution}"[:2000],
+            )
+        )
+        session.add(
+            OrderEventRow(
+                order_id=row.order_id,
+                event_type="case_resolved",
+                message=f"Кейс #{case_id} закрыт оператором."[:500],
+            )
+        )
+        await session.commit()
+        await session.refresh(row)
+        return _to_order_case(row)
+
+
+async def get_order_for_operator(
+    order_id: int,
+) -> tuple[CustomerOrder, list[SupplierOrderGroup], list[OrderLine], list[OrderEvent]] | None:
+    async with Session() as session:
+        order = await session.scalar(
+            select(CustomerOrderRow).where(CustomerOrderRow.id == order_id)
+        )
+        if order is None:
+            return None
+
+        groups = (
+            await session.scalars(
+                select(SupplierOrderGroupRow)
+                .where(SupplierOrderGroupRow.order_id == order_id)
+                .order_by(SupplierOrderGroupRow.id.asc())
+            )
+        ).all()
+        lines = (
+            await session.scalars(
+                select(OrderLineRow)
+                .where(OrderLineRow.order_id == order_id)
+                .order_by(OrderLineRow.id.asc())
+            )
+        ).all()
+        events = (
+            await session.scalars(
+                select(OrderEventRow)
+                .where(OrderEventRow.order_id == order_id)
+                .order_by(OrderEventRow.id.desc())
+                .limit(50)
+            )
+        ).all()
+        return (
+            _to_customer_order(order),
+            [_to_supplier_group(row) for row in groups],
+            [_to_order_line(row) for row in lines],
+            [_to_order_event(row) for row in events],
+        )
