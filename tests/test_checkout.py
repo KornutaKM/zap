@@ -10,6 +10,7 @@ from app.checkout import (
     DeeplinkCheckoutAdapter,
     GenericHttpCheckoutAdapter,
     HttpCheckoutConfig,
+    parse_checkout_extra_payload,
 )
 
 
@@ -48,3 +49,20 @@ def test_http_checkout_requires_https():
                 base_url="http://example.test",
             )
         )
+
+
+
+def test_checkout_provider_context_must_be_json_object():
+    assert parse_checkout_extra_payload('{"warehouse":"msk"}') == {
+        "warehouse": "msk"
+    }
+    with pytest.raises(ValueError):
+        parse_checkout_extra_payload('["not", "object"]')
+
+
+def test_deeplink_cancel_never_claims_remote_cancellation():
+    result = asyncio.run(
+        DeeplinkCheckoutAdapter().cancel_checkout("external-1")
+    )
+    assert result.status == "unknown"
+    assert result.error
