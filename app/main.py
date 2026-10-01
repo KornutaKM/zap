@@ -49,6 +49,7 @@ from app.ui import (
     candidate_text,
     part_detail_keyboard,
     parts_results_keyboard,
+    price_alert_target_keyboard,
     price_alerts_keyboard,
     service_kits_keyboard,
     vehicle_modification_text,
@@ -279,6 +280,53 @@ async def open_catalog_for_saved_vehicle(message: Message, state: FSMContext) ->
     )
 
 
+def sort_part_candidates(candidates, mode: str):
+    ordered = list(candidates)
+    if mode == "price":
+        ordered.sort(key=lambda item: (item.min_price, item.min_delivery_days))
+        return ordered, "сначала дешевле"
+    if mode == "speed":
+        ordered.sort(key=lambda item: (item.min_delivery_days, item.min_price))
+        return ordered, "сначала быстрее"
+    return ordered, "рекомендуемые"
+
+
+def vehicle_state_payload(vehicle: Vehicle | None):
+    if vehicle is None:
+        return None
+    return {
+        "brand": vehicle.brand,
+        "model": vehicle.model,
+        "year": vehicle.year,
+        "vin": vehicle.vin,
+        "id": vehicle.id,
+        "generation_code": vehicle.generation_code,
+        "engine": vehicle.engine,
+        "fuel": vehicle.fuel,
+        "drive": vehicle.drive,
+        "power_hp": vehicle.power_hp,
+        "modification_key": vehicle.modification_key,
+    }
+
+
+def vehicle_from_state(payload):
+    if not payload:
+        return None
+    return Vehicle(
+        brand=payload["brand"],
+        model=payload["model"],
+        year=payload["year"],
+        vin=payload.get("vin"),
+        id=payload.get("id"),
+        generation_code=payload.get("generation_code"),
+        engine=payload.get("engine"),
+        fuel=payload.get("fuel"),
+        drive=payload.get("drive"),
+        power_hp=payload.get("power_hp"),
+        modification_key=payload.get("modification_key"),
+    )
+
+
 async def send_search_results(
     message: Message,
     state: FSMContext,
@@ -296,34 +344,20 @@ async def send_search_results(
         )
         return
 
-    candidates = list(recommended)
-    sort_label = "рекомендуемые"
-    if parsed_query.sort_mode == "price":
-        candidates.sort(key=lambda item: (item.min_price, item.min_delivery_days))
-        sort_label = "сначала дешевле"
-    elif parsed_query.sort_mode == "speed":
-        candidates.sort(key=lambda item: (item.min_delivery_days, item.min_price))
-        sort_label = "сначала быстрее"
-
+    stored = list(recommended[:20])
+    candidates, sort_label = sort_part_candidates(stored, parsed_query.sort_mode)
     visible = candidates[:5]
+
     await state.update_data(
         last_parts=[serialize_candidate(item) for item in visible],
-        last_parts_recommended=[
-            serialize_candidate(item) for item in recommended[:20]
-        ],
+        last_parts_recommended=[serialize_candidate(item) for item in stored],
         last_query=parsed_query.raw,
         last_parent_id=parent_id,
-        last_vehicle=(
-            {
-                "brand": vehicle.brand,
-                "model": vehicle.model,
-                "year": vehicle.year,
-                "vin": vehicle.vin,
-            }
-            if vehicle
-            else None
-        ),
+        last_vehicle=vehicle_state_payload(vehicle),
         last_compatibility_note=compatibility_note,
+        last_sort_mode=parsed_query.sort_mode,
+        last_page=0,
+        last_total_found=len(recommended),
     )
 
     vehicle_block = f"{vehicle_summary(vehicle)}\n\n" if vehicle else ""
@@ -337,10 +371,15 @@ async def send_search_results(
         f"{vehicle_block}"
         f"Запрос: <b>{escape(parsed_query.raw)}</b>\n"
         f"Сортировка: <b>{escape(sort_label)}</b>\n"
-        f"Найдено вариантов: <b>{len(candidates)}</b>\n\n"
+        f"Найдено вариантов: <b>{len(recommended)}</b>\n\n"
         f"{body}\n\n"
         f"<i>{escape(note)}</i>",
-        reply_markup=parts_results_keyboard(visible, parent_id),
+        reply_markup=parts_results_keyboard(
+            visible,
+            parent_id,
+            page=0,
+            total_count=len(candidates),
+        ),
     )
 
 async def start_search(
@@ -1092,34 +1131,21 @@ async def sort_parts_callback(callback: CallbackQuery, state: FSMContext):
         await callback.message.answer("Эта выдача устарела. Выполните поиск ещё раз.")
         return
 
-    candidates = [deserialize_candidate(item) for item in raw_items]
-    if mode == "price":
-        candidates.sort(key=lambda item: (item.min_price, item.min_delivery_days))
-        sort_label = "сначала дешевле"
-    elif mode == "speed":
-        candidates.sort(key=lambda item: (item.min_delivery_days, item.min_price))
-        sort_label = "сначала быстрее"
-    else:
-        sort_label = "рекомендуемые"
-
+    base_candidates = [deserialize_candidate(item) for item in raw_items]
+    candidates, sort_label = sort_part_candidates(base_candidates, mode)
     visible = candidates[:5]
+
     await state.update_data(
-        last_parts=[serialize_candidate(item) for item in visible]
+        last_parts=[serialize_candidate(item) for item in visible],
+        last_sort_mode=mode,
+        last_page=0,
     )
 
     query = data.get("last_query") or "запчасть"
     parent_id = data.get("last_parent_id")
-    vehicle_data = data.get("last_vehicle")
+    vehicle = vehicle_from_state(data.get("last_vehicle"))
     note = data.get("last_compatibility_note") or "Данные и цены пока демонстрационные."
-
-    vehicle = None
-    if vehicle_data:
-        vehicle = Vehicle(
-            vehicle_data["brand"],
-            vehicle_data["model"],
-            vehicle_data["year"],
-            vehicle_data.get("vin"),
-        )
+    total_found = data.get("last_total_found") or len(candidates)
 
     vehicle_block = f"{vehicle_summary(vehicle)}\n\n" if vehicle else ""
     body = "\n\n".join(
@@ -1130,10 +1156,76 @@ async def sort_parts_callback(callback: CallbackQuery, state: FSMContext):
     await callback.message.edit_text(
         f"{vehicle_block}"
         f"Запрос: <b>{escape(query)}</b>\n"
-        f"Сортировка: <b>{escape(sort_label)}</b>\n\n"
+        f"Сортировка: <b>{escape(sort_label)}</b>\n"
+        f"Найдено вариантов: <b>{total_found}</b>\n\n"
         f"{body}\n\n"
         f"<i>{escape(note)}</i>",
-        reply_markup=parts_results_keyboard(visible, parent_id),
+        reply_markup=parts_results_keyboard(
+            visible,
+            parent_id,
+            page=0,
+            total_count=len(candidates),
+        ),
+    )
+
+
+@dp.callback_query(F.data.startswith("page:"))
+async def parts_page_callback(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    if callback.message is None:
+        return
+
+    raw_page = (callback.data or "").split(":", 1)[1]
+    if raw_page == "noop":
+        return
+    try:
+        requested_page = int(raw_page)
+    except ValueError:
+        return
+
+    data = await state.get_data()
+    raw_items = data.get("last_parts_recommended") or []
+    if not raw_items:
+        await callback.message.answer("Эта выдача устарела. Выполните поиск ещё раз.")
+        return
+
+    base_candidates = [deserialize_candidate(item) for item in raw_items]
+    mode = data.get("last_sort_mode") or "recommended"
+    candidates, sort_label = sort_part_candidates(base_candidates, mode)
+    total_pages = max(1, (len(candidates) + 4) // 5)
+    page = min(max(requested_page, 0), total_pages - 1)
+    start = page * 5
+    visible = candidates[start:start + 5]
+
+    await state.update_data(
+        last_parts=[serialize_candidate(item) for item in visible],
+        last_page=page,
+    )
+
+    query = data.get("last_query") or "запчасть"
+    parent_id = data.get("last_parent_id")
+    vehicle = vehicle_from_state(data.get("last_vehicle"))
+    note = data.get("last_compatibility_note") or "Данные и цены пока демонстрационные."
+    total_found = data.get("last_total_found") or len(candidates)
+
+    vehicle_block = f"{vehicle_summary(vehicle)}\n\n" if vehicle else ""
+    body = "\n\n".join(
+        candidate_text(start + index + 1, candidate)
+        for index, candidate in enumerate(visible)
+    )
+    await callback.message.edit_text(
+        f"{vehicle_block}"
+        f"Запрос: <b>{escape(query)}</b>\n"
+        f"Сортировка: <b>{escape(sort_label)}</b>\n"
+        f"Найдено вариантов: <b>{total_found}</b>\n\n"
+        f"{body}\n\n"
+        f"<i>{escape(note)}</i>",
+        reply_markup=parts_results_keyboard(
+            visible,
+            parent_id,
+            page=page,
+            total_count=len(candidates),
+        ),
     )
 
 
