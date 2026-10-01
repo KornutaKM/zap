@@ -1607,6 +1607,17 @@ async def quote_refresh_callback(callback: CallbackQuery, state: FSMContext):
             continue
         candidate_map[(request.brand.casefold(), request.article.casefold())] = candidate
 
+    if missing:
+        await callback.message.edit_text(
+            "<b>Не удалось корректно пересчитать весь заказ</b>\n\n"
+            "Нет актуальных предложений для: "
+            + ", ".join(escape(item) for item in missing)
+            + "\n\nСравнение суммы не выполняется, чтобы не показать "
+            "ложное снижение цены.",
+            reply_markup=saved_quote_keyboard(quote.id, saved_plan),
+        )
+        return
+
     current_plans = optimize_purchase(
         requests,
         candidate_map,
@@ -1627,16 +1638,9 @@ async def quote_refresh_callback(callback: CallbackQuery, state: FSMContext):
         last_purchase_vehicle_id=quote.vehicle_id,
     )
 
-    missing_text = ""
-    if missing:
-        missing_text = (
-            "\n\nНе удалось обновить: "
-            + ", ".join(escape(item) for item in missing)
-        )
-
     await callback.message.edit_text(
         f"{purchase_comparison_text(comparison, current)}"
-        f"{missing_text}\n\n"
+        f"\n\n"
         f"{purchase_plan_text(current, 1)}",
         reply_markup=quote_refresh_keyboard(quote.id, current, 0),
     )
