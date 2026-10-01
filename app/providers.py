@@ -46,11 +46,34 @@ def _expand_market_offers(
     return offers
 
 
+DEMO_ARTICLES: dict[str, tuple[str, str, str, str, int, float]] = {
+    "13046071842": ("ATE", "13.0460-7184.2", "Комплект тормозных колодок", "8600", 2, .95),
+    "gdb1956": ("TRW", "GDB1956", "Комплект тормозных колодок", "6900", 3, .90),
+    "p06089": ("Brembo", "P06089", "Комплект тормозных колодок", "7800", 1, .94),
+    "0000870sx": ("Stellox", "0000870SX", "Комплект тормозных колодок", "4200", 4, .60),
+    "hu816x": ("MANN-FILTER", "HU816X", "Масляный фильтр", "1450", 1, .96),
+    "ox404d": ("Mahle", "OX404D", "Масляный фильтр", "1320", 2, .95),
+    "f026407123": ("Bosch", "F026407123", "Масляный фильтр", "1190", 3, .90),
+    "oe6722": ("Filtron", "OE672/2", "Масляный фильтр", "860", 2, .82),
+    "c30005": ("MANN-FILTER", "C30005", "Воздушный фильтр", "1900", 2, .96),
+    "lx2046": ("Mahle", "LX2046", "Воздушный фильтр", "1720", 3, .94),
+    "cuk23014": ("MANN-FILTER", "CUK23014", "Салонный фильтр", "2100", 1, .96),
+    "lak675": ("Mahle", "LAK675", "Салонный фильтр", "1980", 2, .94),
+}
+
+
+def _normalize_article(value: str) -> str:
+    return "".join(ch for ch in value.casefold() if ch.isalnum())
+
+
 class MockProvider(PartsProvider):
     name = "Demo marketplace"
 
     async def search(self, vehicle: Vehicle, query: str) -> list[Offer]:
         q = query.casefold()
+        exact = DEMO_ARTICLES.get(_normalize_article(query))
+        if exact is not None:
+            return _expand_market_offers([exact])
 
         if "колод" in q:
             rows = [
