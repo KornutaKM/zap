@@ -57,7 +57,7 @@ async def check_price_alert(
     await update_price_alert(
         alert.id,
         last_price=current,
-        triggered=triggered,
+        triggered=False,
     )
     if triggered:
         return PriceAlertHit(alert=alert, current_price=current)
