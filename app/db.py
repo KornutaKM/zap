@@ -1,4 +1,6 @@
-from sqlalchemy import BigInteger, Boolean, DateTime, Integer, String, delete, func, select, update
+from datetime import datetime
+
+from sqlalchemy import BigInteger, Boolean, DateTime, Integer, String, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -30,7 +32,7 @@ class SearchHistoryRow(Base):
     telegram_user_id: Mapped[int] = mapped_column(BigInteger, index=True)
     query: Mapped[str] = mapped_column(String(250))
     vehicle_label: Mapped[str | None] = mapped_column(String(250), nullable=True)
-    created_at: Mapped[object] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class FavoritePartRow(Base):
