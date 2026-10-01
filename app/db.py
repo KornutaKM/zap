@@ -1,12 +1,13 @@
 from datetime import datetime, timezone
 from decimal import Decimal
+import json
 
-from sqlalchemy import BigInteger, Boolean, DateTime, Integer, Numeric, String, func, select, text, update
+from sqlalchemy import BigInteger, Boolean, DateTime, Integer, Numeric, String, Text, func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 from app.config import settings
-from app.domain import FavoritePart, PriceAlert, SearchHistoryItem, ShoppingListItem, Vehicle
+from app.domain import FavoritePart, Offer, PriceAlert, PriceHistoryPoint, SavedPurchaseQuote, SearchHistoryItem, ShoppingListItem, Vehicle
 
 
 class Base(DeclarativeBase):
@@ -73,6 +74,33 @@ class ShoppingListRow(Base):
     title: Mapped[str] = mapped_column(String(250))
     quantity: Mapped[int] = mapped_column(Integer, default=1)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class SavedPurchaseQuoteRow(Base):
+    __tablename__ = "saved_purchase_quotes"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    telegram_user_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    vehicle_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    title: Mapped[str] = mapped_column(String(250))
+    grand_total: Mapped[Decimal] = mapped_column(Numeric(12, 2))
+    provider_count: Mapped[int] = mapped_column(Integer)
+    max_delivery_days: Mapped[int] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String(40), default="saved", index=True)
+    snapshot_json: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class PriceHistoryRow(Base):
+    __tablename__ = "price_history"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    provider: Mapped[str] = mapped_column(String(120), index=True)
+    brand: Mapped[str] = mapped_column(String(120), index=True)
+    article: Mapped[str] = mapped_column(String(120), index=True)
+    price: Mapped[Decimal] = mapped_column(Numeric(12, 2))
+    delivery_days: Mapped[int] = mapped_column(Integer)
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
 
 
 class GarageVehicleRow(Base):
@@ -754,3 +782,166 @@ async def clear_shopping_list(user_id: int) -> None:
         for row in rows:
             await session.delete(row)
         await session.commit()
+
+
+
+async def save_purchase_quote(
+    user_id: int,
+    *,
+    vehicle_id: int | None,
+    title: str,
+    grand_total,
+    provider_count: int,
+    max_delivery_days: int,
+    snapshot: dict,
+) -> SavedPurchaseQuote:
+    async with Session() as session:
+        row = SavedPurchaseQuoteRow(
+            telegram_user_id=user_id,
+            vehicle_id=vehicle_id,
+            title=title[:250],
+            grand_total=Decimal(str(grand_total)),
+            provider_count=max(0, provider_count),
+            max_delivery_days=max(0, max_delivery_days),
+            status="saved",
+            snapshot_json=json.dumps(snapshot, ensure_ascii=False, separators=(",", ":")),
+        )
+        session.add(row)
+        await session.commit()
+        await session.refresh(row)
+        return SavedPurchaseQuote(
+            id=row.id,
+            telegram_user_id=row.telegram_user_id,
+            vehicle_id=row.vehicle_id,
+            title=row.title,
+            grand_total=Decimal(str(row.grand_total)),
+            provider_count=row.provider_count,
+            max_delivery_days=row.max_delivery_days,
+            status=row.status,
+            created_at=row.created_at.isoformat() if row.created_at else None,
+        )
+
+
+async def list_purchase_quotes(
+    user_id: int,
+    limit: int = 20,
+) -> list[SavedPurchaseQuote]:
+    async with Session() as session:
+        rows = (
+            await session.scalars(
+                select(SavedPurchaseQuoteRow)
+                .where(SavedPurchaseQuoteRow.telegram_user_id == user_id)
+                .order_by(SavedPurchaseQuoteRow.id.desc())
+                .limit(limit)
+            )
+        ).all()
+        return [
+            SavedPurchaseQuote(
+                id=row.id,
+                telegram_user_id=row.telegram_user_id,
+                vehicle_id=row.vehicle_id,
+                title=row.title,
+                grand_total=Decimal(str(row.grand_total)),
+                provider_count=row.provider_count,
+                max_delivery_days=row.max_delivery_days,
+                status=row.status,
+                created_at=row.created_at.isoformat() if row.created_at else None,
+            )
+            for row in rows
+        ]
+
+
+async def get_purchase_quote(
+    user_id: int,
+    quote_id: int,
+) -> tuple[SavedPurchaseQuote, dict] | None:
+    async with Session() as session:
+        row = await session.scalar(
+            select(SavedPurchaseQuoteRow).where(
+                SavedPurchaseQuoteRow.id == quote_id,
+                SavedPurchaseQuoteRow.telegram_user_id == user_id,
+            )
+        )
+        if row is None:
+            return None
+        try:
+            snapshot = json.loads(row.snapshot_json)
+        except json.JSONDecodeError:
+            snapshot = {}
+        quote = SavedPurchaseQuote(
+            id=row.id,
+            telegram_user_id=row.telegram_user_id,
+            vehicle_id=row.vehicle_id,
+            title=row.title,
+            grand_total=Decimal(str(row.grand_total)),
+            provider_count=row.provider_count,
+            max_delivery_days=row.max_delivery_days,
+            status=row.status,
+            created_at=row.created_at.isoformat() if row.created_at else None,
+        )
+        return quote, snapshot
+
+
+async def delete_purchase_quote(user_id: int, quote_id: int) -> bool:
+    async with Session() as session:
+        row = await session.scalar(
+            select(SavedPurchaseQuoteRow).where(
+                SavedPurchaseQuoteRow.id == quote_id,
+                SavedPurchaseQuoteRow.telegram_user_id == user_id,
+            )
+        )
+        if row is None:
+            return False
+        await session.delete(row)
+        await session.commit()
+        return True
+
+
+async def record_price_observations(offers: list[Offer]) -> int:
+    if not offers:
+        return 0
+
+    async with Session() as session:
+        for offer in offers:
+            session.add(
+                PriceHistoryRow(
+                    provider=offer.provider,
+                    brand=offer.brand,
+                    article=offer.article,
+                    price=offer.price,
+                    delivery_days=offer.delivery_days,
+                )
+            )
+        await session.commit()
+        return len(offers)
+
+
+async def list_price_history(
+    brand: str,
+    article: str,
+    *,
+    provider: str | None = None,
+    limit: int = 20,
+) -> list[PriceHistoryPoint]:
+    async with Session() as session:
+        stmt = select(PriceHistoryRow).where(
+            PriceHistoryRow.brand == brand,
+            PriceHistoryRow.article == article,
+        )
+        if provider:
+            stmt = stmt.where(PriceHistoryRow.provider == provider)
+        stmt = stmt.order_by(PriceHistoryRow.id.desc()).limit(limit)
+
+        rows = (await session.scalars(stmt)).all()
+        return [
+            PriceHistoryPoint(
+                id=row.id,
+                provider=row.provider,
+                brand=row.brand,
+                article=row.article,
+                price=Decimal(str(row.price)),
+                delivery_days=row.delivery_days,
+                observed_at=row.observed_at.isoformat() if row.observed_at else "",
+            )
+            for row in rows
+        ]
