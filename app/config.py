@@ -8,6 +8,8 @@ class Settings(BaseSettings):
     database_url: str = "sqlite+aiosqlite:///autoparts.db"
     search_cache_ttl_seconds: float = 60.0
     provider_timeout_seconds: float = 5.0
+    provider_circuit_failure_threshold: int = 3
+    provider_circuit_cooldown_seconds: float = 60.0
     external_provider_enabled: bool = False
     external_provider_name: str = "Partner API"
     external_provider_base_url: str | None = None
