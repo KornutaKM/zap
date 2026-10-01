@@ -8,7 +8,7 @@ from aiogram.types import (
 )
 
 from app.catalog import get_children, get_node
-from app.support_cases import can_request_return, case_priority_label, case_status_label, case_type_label
+from app.support_cases import can_request_return, case_is_overdue, case_priority_label, case_status_label, case_type_label, operator_queue_stats
 from app.domain import CustomerOrder, DeliveryProfile, FavoritePart, Offer, OrderCase, OrderCaseNote, OrderEvent, OrderLine, PartCandidate, SavedPurchaseQuote, SearchHistoryItem, ShoppingListItem, SupplierOrderGroup, Vehicle
 from app.procurement import PurchasePlan, PurchasePlanComparison
 from app.service_kits import BuiltKit, SERVICE_KITS
@@ -1059,20 +1059,93 @@ def user_cases_keyboard(cases: list[OrderCase]) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def operator_cases_keyboard(cases: list[OrderCase]) -> InlineKeyboardMarkup:
-    rows: list[list[InlineKeyboardButton]] = []
+def operator_cases_keyboard(
+    cases: list[OrderCase],
+    *,
+    active_filter: str = "all",
+    urgent_sla_hours: float = 4.0,
+    normal_sla_hours: float = 24.0,
+) -> InlineKeyboardMarkup:
+    filter_titles = {
+        "all": "Все",
+        "urgent": "Срочные",
+        "return": "Возвраты",
+        "mine": "Мои",
+        "unassigned": "Неназнач.",
+    }
+    rows: list[list[InlineKeyboardButton]] = [
+        [
+            InlineKeyboardButton(
+                text=("• " if active_filter == key else "") + title,
+                callback_data=f"ops:filter:{key}",
+            )
+            for key, title in (
+                ("all", filter_titles["all"]),
+                ("urgent", filter_titles["urgent"]),
+                ("return", filter_titles["return"]),
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                text=("• " if active_filter == key else "") + title,
+                callback_data=f"ops:filter:{key}",
+            )
+            for key, title in (
+                ("mine", filter_titles["mine"]),
+                ("unassigned", filter_titles["unassigned"]),
+            )
+        ],
+    ]
     for case in cases[:50]:
-        priority = "⚠️ " if case.priority == "urgent" else ""
+        overdue = case_is_overdue(
+            case,
+            urgent_hours=urgent_sla_hours,
+            normal_hours=normal_sla_hours,
+        )
+        prefix = ""
+        if overdue:
+            prefix += "⏰ "
+        if case.priority == "urgent":
+            prefix += "⚠️ "
         rows.append([
             InlineKeyboardButton(
                 text=(
-                    f"{priority}#{case.id} · заказ #{case.order_id} · "
+                    f"{prefix}#{case.id} · заказ #{case.order_id} · "
                     f"{case_type_label(case.case_type)}"
                 ),
                 callback_data=f"ops:case:{case.id}",
             )
         ])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def operator_queue_text(
+    cases: list[OrderCase],
+    *,
+    active_filter: str = "all",
+    urgent_sla_hours: float = 4.0,
+    normal_sla_hours: float = 24.0,
+) -> str:
+    stats = operator_queue_stats(
+        cases,
+        urgent_hours=urgent_sla_hours,
+        normal_hours=normal_sla_hours,
+    )
+    filter_title = {
+        "all": "Все",
+        "urgent": "Срочные",
+        "return": "Возвраты",
+        "mine": "Мои",
+        "unassigned": "Неназначенные",
+    }.get(active_filter, active_filter)
+    return (
+        "<b>Операторская очередь</b>\n"
+        f"Фильтр: <b>{escape(filter_title)}</b>\n\n"
+        f"Кейсов: <b>{stats.total}</b> · срочных: {stats.urgent} · "
+        f"просрочено SLA: {stats.overdue}\n"
+        f"Открыто: {stats.open_count} · в работе: {stats.in_review} · "
+        f"неназначено: {stats.unassigned} · возвратов: {stats.returns}"
+    )
 
 
 def order_case_text(
