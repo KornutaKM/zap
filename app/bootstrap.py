@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 
 from app.cache_backend import SearchCache, build_search_cache
-from app.checkout import CheckoutRegistry, GenericHttpCheckoutAdapter, HttpCheckoutConfig
+from app.checkout import CheckoutRegistry, GenericHttpCheckoutAdapter, HttpCheckoutConfig, parse_checkout_extra_payload
 from app.external_fitment import GenericHttpFitmentCatalog, HttpFitmentConfig
 from app.external_provider import GenericHttpProvider, HttpProviderConfig
 from app.external_vehicle import GenericHttpVehicleResolver, HttpVehicleResolverConfig
@@ -86,11 +86,15 @@ def build_checkout_registry(settings) -> CheckoutRegistry:
                     base_url=settings.checkout_api_base_url,
                     create_path=settings.checkout_api_create_path,
                     status_path=settings.checkout_api_status_path,
+                    cancel_path=settings.checkout_api_cancel_path,
                     api_key=settings.checkout_api_key,
                     api_key_header=settings.checkout_api_key_header,
                     auth_scheme=settings.checkout_api_auth_scheme,
                     allow_http=settings.checkout_api_allow_http,
                     timeout_seconds=settings.checkout_api_timeout_seconds,
+                    extra_payload=parse_checkout_extra_payload(
+                        settings.checkout_api_extra_payload_json
+                    ),
                 )
             )
         )
