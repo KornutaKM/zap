@@ -1,8 +1,13 @@
 import asyncio
+import logging
 
 from aiohttp import web
 from aiogram import Bot, Dispatcher
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
+
+from app.observability import log_event
+
+logger = logging.getLogger("zap.runtime")
 
 
 def normalize_webhook_path(path: str) -> str:
@@ -17,6 +22,7 @@ def validate_webhook_url(url: str | None) -> str:
 
 
 async def run_polling(bot: Bot, dispatcher: Dispatcher) -> None:
+    log_event(logger, logging.INFO, "runtime_polling", "starting polling runtime")
     await bot.delete_webhook(drop_pending_updates=False)
     await dispatcher.start_polling(bot)
 
@@ -50,6 +56,15 @@ async def run_webhook(bot: Bot, dispatcher: Dispatcher, settings) -> None:
 
     try:
         await site.start()
+        log_event(
+            logger,
+            logging.INFO,
+            "runtime_webhook",
+            "webhook server started",
+            host=settings.webhook_host,
+            port=settings.webhook_port,
+            path=webhook_path,
+        )
         await bot.set_webhook(
             webhook_url,
             secret_token=settings.webhook_secret_token,
