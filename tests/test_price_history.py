@@ -30,3 +30,20 @@ def test_price_history_summary_shows_direction_and_range():
 
 def test_empty_price_history():
     assert "не накоплена" in summarize_price_history([])
+
+
+
+def test_provider_name_is_html_escaped():
+    text = summarize_price_history([
+        PriceHistoryPoint(
+            id=1,
+            provider="<b>Shop</b>",
+            brand="ATE",
+            article="123",
+            price=Decimal("1000"),
+            delivery_days=1,
+            observed_at="2026-10-01T10:00:00",
+        )
+    ])
+    assert "&lt;b&gt;Shop&lt;/b&gt;" in text
+    assert "<b>Shop</b>" not in text
