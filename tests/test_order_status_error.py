@@ -17,7 +17,7 @@ from app.db import (
     update_order_status,
     update_supplier_group_checkout,
 )
-from app.domain import Offer, PartCandidate
+from app.domain import DeliveryProfile, Offer, PartCandidate
 from app.orders import (
     create_order_from_plan,
     refresh_order_checkout_status,
@@ -34,6 +34,19 @@ class FakeSearch:
             url="https://shop.example/item/123",
         )
         return [PartCandidate("ATE", "123", "Pads", .9, (offer,))]
+
+
+def profile():
+    return DeliveryProfile(
+        id=1,
+        telegram_user_id=42,
+        full_name="Иван Иванов",
+        phone="+79991234567",
+        email="ivan@example.com",
+        country="Россия",
+        city="Москва",
+        address_line1="ул. Примерная, 1",
+    )
 
 
 class FailingStatusAdapter:
@@ -68,6 +81,7 @@ async def main():
         42, plan, vehicle_id=None,
         shipping_fee=Decimal("500"),
         free_threshold=Decimal("999999"),
+        delivery_profile=profile(),
     )
     checked = await revalidate_order(
         42, order.id,
