@@ -100,6 +100,9 @@ def generation_keyboard(generations: list[VehicleGeneration]) -> InlineKeyboardM
 def parts_results_keyboard(
     candidates: list[PartCandidate],
     parent_id: str | None = None,
+    *,
+    page: int = 0,
+    total_count: int | None = None,
 ) -> InlineKeyboardMarkup:
     rows = [
         [
@@ -110,6 +113,26 @@ def parts_results_keyboard(
         ]
         for index, item in enumerate(candidates[:5])
     ]
+    count = len(candidates) if total_count is None else total_count
+    total_pages = max(1, (count + 4) // 5)
+    if total_pages > 1:
+        navigation: list[InlineKeyboardButton] = []
+        if page > 0:
+            navigation.append(
+                InlineKeyboardButton(text="←", callback_data=f"page:{page - 1}")
+            )
+        navigation.append(
+            InlineKeyboardButton(
+                text=f"{page + 1}/{total_pages}",
+                callback_data="page:noop",
+            )
+        )
+        if page + 1 < total_pages:
+            navigation.append(
+                InlineKeyboardButton(text="→", callback_data=f"page:{page + 1}")
+            )
+        rows.append(navigation)
+
     rows.append([
         InlineKeyboardButton(text="⭐ Рекоменд.", callback_data="sort:recommended"),
         InlineKeyboardButton(text="💰 Дешевле", callback_data="sort:price"),
@@ -396,3 +419,23 @@ def price_alerts_keyboard(alerts) -> InlineKeyboardMarkup:
             ),
         ])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+
+def price_alert_target_keyboard(index: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="−5%", callback_data=f"alert:set:{index}:5"),
+                InlineKeyboardButton(text="−10%", callback_data=f"alert:set:{index}:10"),
+                InlineKeyboardButton(text="−20%", callback_data=f"alert:set:{index}:20"),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="Текущая цена",
+                    callback_data=f"alert:set:{index}:0",
+                )
+            ],
+            [InlineKeyboardButton(text="Отмена", callback_data=f"part:{index}")],
+        ]
+    )
