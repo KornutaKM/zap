@@ -53,6 +53,7 @@ from app.ui import (
     delete_vehicle_confirm_keyboard,
     delivery_profile_keyboard,
     delivery_profile_text,
+    external_cancel_confirm_keyboard,
     favorites_keyboard,
     garage_keyboard,
     generation_keyboard,
@@ -1908,6 +1909,31 @@ async def order_confirm_prices_callback(callback: CallbackQuery):
 @dp.callback_query(F.data.startswith("order:cancel_external:"))
 async def order_external_cancel_callback(callback: CallbackQuery):
     await callback.answer()
+    if callback.message is None:
+        return
+
+    try:
+        order_id = int((callback.data or "").rsplit(":", 1)[1])
+    except ValueError:
+        return
+
+    loaded = await get_customer_order(callback.from_user.id, order_id)
+    if loaded is None:
+        await callback.message.answer("Заказ не найден.")
+        return
+
+    await callback.message.edit_text(
+        "<b>Запросить отмену у поставщика?</b>\n\n"
+        "Бот отправит cancel-запрос только тем supplier-группам, "
+        "у которых есть внешний order API. Ручные deeplink-заказы "
+        "автоматически отменены не будут.",
+        reply_markup=external_cancel_confirm_keyboard(order_id),
+    )
+
+
+@dp.callback_query(F.data.startswith("order:cancel_external_confirm:"))
+async def order_external_cancel_confirm_callback(callback: CallbackQuery):
+    await callback.answer("Отправляю запрос отмены")
     if callback.message is None:
         return
 
