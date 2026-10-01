@@ -563,7 +563,13 @@ async def refresh_order_checkout_status(
         )
         statuses.append(updated.status if updated is not None else group.status)
 
-    if statuses and all(status in {"completed"} for status in statuses):
+    if statuses and all(status == "cancelled" for status in statuses):
+        target = "cancelled"
+        message = "Все supplier-группы подтверждённо отменены."
+    elif any(status == "cancel_pending" for status in statuses):
+        target = "cancel_pending"
+        message = "Ожидается подтверждение отмены от поставщиков."
+    elif statuses and all(status in {"completed"} for status in statuses):
         target = "completed"
         message = "Все supplier-группы завершены."
     elif statuses and all(status in {"placed", "confirmed", "completed"} for status in statuses):
