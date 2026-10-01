@@ -350,6 +350,34 @@ Snapshot не меняется вслед за текущей корзиной �
 
 или кнопкой «📄 Расчёты».
 
+## Профиль получателя и доставка
+
+Команда:
+
+```text
+/delivery
+```
+
+или кнопка «👤 Доставка».
+
+Профиль хранит:
+
+- имя получателя;
+- телефон;
+- optional email;
+- страну;
+- город;
+- адрес;
+- optional индекс.
+
+Телефон нормализуется, обязательные поля и email валидируются до сохранения.
+
+Профиль пользователя и данные конкретного заказа разделены. При создании заказа текущий профиль копируется в immutable delivery snapshot. Последующее изменение профиля не меняет старый заказ автоматически. Для pre-checkout заказа можно явно нажать «👤 Обновить доставку» и записать новый snapshot.
+
+Если после revalidation цена и наличие подтверждены, но snapshot доставки отсутствует, заказ получает статус `needs_delivery`. Checkout-кнопка до заполнения данных не показывается, а service layer дополнительно блокирует прямой callback без snapshot.
+
+Удаление пользовательского профиля не удаляет snapshot уже созданных заказов.
+
 ## Заказы и checkout
 
 Расчёт и заказ разделены:
@@ -381,10 +409,14 @@ draft
 ready
 price_changed
 needs_attention
+needs_delivery
 checkout_pending
 awaiting_manual_checkout
 partially_placed
 placed
+cancel_pending
+cancel_requires_attention
+cancelled
 completed
 ```
 
@@ -392,7 +424,7 @@ completed
 
 Только отдельная кнопка «🚀 Перейти к оформлению» запускает checkout. Создание заказа, revalidation и просмотр заказа не создают внешних заказов.
 
-Локальная отмена доступна только до начала checkout. После появления внешнего `external_order_id`, статуса `manual_required` или подтверждённого оформления бот не делает вид, что отменил заказ у поставщика: для такой операции потребуется реальный cancel endpoint конкретного provider.
+Локальная отмена доступна только до начала checkout. Для API-заказа с `external_order_id` бот показывает отдельную двухшаговую отмену: сначала подтверждение пользователя, затем вызов provider cancel endpoint. Если provider вернул асинхронную отмену, заказ переходит в `cancel_pending` и order-worker продолжает polling. Ручные deeplink-заказы автоматически отменёнными не считаются; смешанный заказ может перейти в `cancel_requires_attention`.
 
 ### Checkout adapters
 
@@ -406,8 +438,10 @@ CHECKOUT_API_PROVIDER_NAME=Partner API
 CHECKOUT_API_BASE_URL=https://partner.example.com
 CHECKOUT_API_CREATE_PATH=/orders
 CHECKOUT_API_STATUS_PATH=/orders/{external_order_id}
+CHECKOUT_API_CANCEL_PATH=/orders/{external_order_id}/cancel
 CHECKOUT_API_KEY=...
 CHECKOUT_API_TIMEOUT_SECONDS=10
+CHECKOUT_API_EXTRA_PAYLOAD_JSON={"warehouse":"msk"}
 ```
 
 Создание checkout передаёт idempotency key вида:
@@ -416,7 +450,15 @@ CHECKOUT_API_TIMEOUT_SECONDS=10
 zap:<order_id>:<supplier_group_id>
 ```
 
-Adapter принимает `external_order_id`, `checkout_url` и provider status. HTTP вызовы ограничены timeout; `external_order_id` безопасно экранируется при подстановке в status URL.
+Cancel-запрос использует отдельный idempotency key:
+
+```text
+zap:cancel:<external_order_id>
+```
+
+Checkout payload имеет стабильный core-contract: сумма, позиции, `recipient` и `delivery_address`. Provider-specific данные из `CHECKOUT_API_EXTRA_PAYLOAD_JSON` отправляются отдельным объектом `provider_context` и не могут перезаписать core-поля.
+
+Adapter принимает `external_order_id`, `checkout_url` и provider status. HTTP вызовы ограничены timeout; `external_order_id` URL-экранируется при status/cancel запросах.
 
 Один пользовательский заказ может одновременно содержать:
 
@@ -512,7 +554,10 @@ PRICE_ALERT_DROP_PERCENT=5
 - несколько автомобилей;
 - выбранная модификация;
 - price alerts;
-- постоянный список закупки и количество позиций.
+- постоянный список закупки и количество позиций;
+- профиль получателя и доставки;
+- delivery snapshots заказов;
+- заказы, supplier-группы и audit events.
 
 Из истории и избранного можно повторно запустить поиск и получить свежие предложения.
 
@@ -608,6 +653,7 @@ app/
 ├── service_kits.py       service kits
 ├── work_orders.py        work list → parts resolver
 ├── procurement.py        multi-store purchase optimizer
+├── delivery.py           delivery validation / snapshots
 ├── orders.py             order lifecycle / revalidation / checkout orchestration
 ├── checkout.py           deeplink + generic HTTPS checkout adapters
 ├── commercial_rules.py   provider-specific delivery rules
@@ -629,7 +675,7 @@ app/
 Текущий Alembic head:
 
 ```text
-20261001_0002
+20261001_0003
 ```
 
 Revisions:
@@ -637,6 +683,7 @@ Revisions:
 ```text
 20261001_0001  baseline существующей схемы
 20261001_0002  orders / supplier groups / order lines / audit events
+20261001_0003  delivery profiles / immutable order delivery snapshots
 ```
 
 Первый revision сделан idempotent для перехода со старого `create_all`-режима:
@@ -771,7 +818,7 @@ pytest
 Docker build
 ```
 
-Отдельно проверяются upgrade старой схемы гаража, Alembic head `0002`, shopping list, procurement optimizer, work resolver, order lifecycle, checkout fallback, rate limiting и production-compose topology.
+Отдельно проверяются upgrade старой схемы гаража, Alembic head `0003`, delivery snapshots, shopping list, procurement optimizer, work resolver, order lifecycle, checkout/deeplink fallback, provider cancellation, rate limiting и production-compose topology.
 
 ## Что пока не production-ready
 
@@ -798,6 +845,7 @@ VIN / модель
 → сохранённый расчёт
 → order draft
 → revalidation цены/наличия
+→ delivery snapshot
 → API checkout / deeplink
-→ status monitoring
+→ status monitoring / provider cancellation
 ```
