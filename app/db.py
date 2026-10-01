@@ -1785,13 +1785,29 @@ async def list_user_order_cases(
 async def list_operator_order_cases(
     *,
     statuses: tuple[str, ...] = ("open", "in_review"),
+    case_type: str | None = None,
+    priority: str | None = None,
+    assigned_operator_user_id: int | None = None,
+    only_unassigned: bool = False,
     limit: int = 50,
 ) -> list[OrderCase]:
+    conditions = [OrderCaseRow.status.in_(statuses)]
+    if case_type is not None:
+        conditions.append(OrderCaseRow.case_type == case_type)
+    if priority is not None:
+        conditions.append(OrderCaseRow.priority == priority)
+    if assigned_operator_user_id is not None:
+        conditions.append(
+            OrderCaseRow.assigned_operator_user_id == assigned_operator_user_id
+        )
+    if only_unassigned:
+        conditions.append(OrderCaseRow.assigned_operator_user_id.is_(None))
+
     async with Session() as session:
         rows = (
             await session.scalars(
                 select(OrderCaseRow)
-                .where(OrderCaseRow.status.in_(statuses))
+                .where(*conditions)
                 .order_by(
                     OrderCaseRow.priority.desc(),
                     OrderCaseRow.created_at.asc(),
