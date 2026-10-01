@@ -62,6 +62,7 @@ class Settings(BaseSettings):
     price_alert_drop_percent: float = 5.0
     order_status_monitor_enabled: bool = False
     order_status_interval_seconds: int = 300
+    operator_user_ids: str | None = None
     bot_run_mode: str = "polling"
     webhook_url: str | None = None
     webhook_path: str = "/webhook"
