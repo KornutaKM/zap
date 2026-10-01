@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import BigInteger, Boolean, DateTime, Integer, String, func, select, update
+from sqlalchemy import BigInteger, Boolean, DateTime, Integer, String, func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -54,6 +54,12 @@ class GarageVehicleRow(Base):
     model: Mapped[str] = mapped_column(String(120))
     year: Mapped[int] = mapped_column(Integer)
     vin: Mapped[str | None] = mapped_column(String(17), nullable=True)
+    generation_code: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    engine: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    fuel: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    drive: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    power_hp: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    modification_key: Mapped[str | None] = mapped_column(String(120), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
 
 
@@ -68,7 +74,37 @@ def _to_vehicle(row: GarageVehicleRow) -> Vehicle:
         year=row.year,
         vin=row.vin,
         id=row.id,
+        generation_code=row.generation_code,
+        engine=row.engine,
+        fuel=row.fuel,
+        drive=row.drive,
+        power_hp=row.power_hp,
+        modification_key=row.modification_key,
     )
+
+
+async def _migrate_garage_vehicle_columns() -> None:
+    if not str(engine.url).startswith("sqlite"):
+        return
+
+    columns = {
+        "generation_code": "VARCHAR(40)",
+        "engine": "VARCHAR(80)",
+        "fuel": "VARCHAR(40)",
+        "drive": "VARCHAR(40)",
+        "power_hp": "INTEGER",
+        "modification_key": "VARCHAR(120)",
+    }
+
+    async with engine.begin() as conn:
+        rows = await conn.execute(text("PRAGMA table_info(garage_vehicles)"))
+        existing = {row[1] for row in rows}
+
+        for name, sql_type in columns.items():
+            if name not in existing:
+                await conn.execute(
+                    text(f"ALTER TABLE garage_vehicles ADD COLUMN {name} {sql_type}")
+                )
 
 
 async def _migrate_legacy_vehicles() -> None:
@@ -104,6 +140,7 @@ async def _migrate_legacy_vehicles() -> None:
 async def init_db() -> None:
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+    await _migrate_garage_vehicle_columns()
     await _migrate_legacy_vehicles()
 
 
@@ -334,3 +371,61 @@ async def remove_favorite(user_id: int, favorite_id: int) -> bool:
         await session.delete(row)
         await session.commit()
         return True
+
+
+
+async def set_vehicle_modification(
+    user_id: int,
+    vehicle_id: int,
+    *,
+    generation_code: str,
+    engine_code: str,
+    fuel: str,
+    drive: str,
+    power_hp: int,
+    modification_key: str,
+) -> Vehicle | None:
+    async with Session() as session:
+        row = await session.scalar(
+            select(GarageVehicleRow).where(
+                GarageVehicleRow.id == vehicle_id,
+                GarageVehicleRow.telegram_user_id == user_id,
+            )
+        )
+        if row is None:
+            return None
+
+        row.generation_code = generation_code
+        row.engine = engine_code
+        row.fuel = fuel
+        row.drive = drive
+        row.power_hp = power_hp
+        row.modification_key = modification_key
+        await session.commit()
+        await session.refresh(row)
+        return _to_vehicle(row)
+
+
+async def clear_vehicle_modification(
+    user_id: int,
+    vehicle_id: int,
+) -> Vehicle | None:
+    async with Session() as session:
+        row = await session.scalar(
+            select(GarageVehicleRow).where(
+                GarageVehicleRow.id == vehicle_id,
+                GarageVehicleRow.telegram_user_id == user_id,
+            )
+        )
+        if row is None:
+            return None
+
+        row.generation_code = None
+        row.engine = None
+        row.fuel = None
+        row.drive = None
+        row.power_hp = None
+        row.modification_key = None
+        await session.commit()
+        await session.refresh(row)
+        return _to_vehicle(row)
