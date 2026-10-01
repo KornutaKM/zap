@@ -14,6 +14,7 @@ from app.config import settings
 from app.db import add_favorite, delete_vehicle, get_search_history_item, get_vehicle, init_db, list_favorites, list_recent_searches, list_vehicles, record_search, remove_favorite, save_vehicle, set_active_vehicle
 from app.domain import Vehicle
 from app.providers import AutodocProvider, ExistProvider, MockProvider
+from app.query_parser import parse_search_query
 from app.ui import (
     BTN_ADD_CAR,
     BTN_ARTICLE,
@@ -193,19 +194,31 @@ async def send_search_results(
     parent_id: str | None = None,
     compatibility_note: str | None = None,
 ) -> None:
-    candidates = await search_service.parts(vehicle, query)
-    if not candidates:
+    parsed_query = parse_search_query(query)
+    recommended = await search_service.parts(vehicle, parsed_query.part_query)
+    if not recommended:
         await message.answer(
             "По этому запросу предложений пока нет.",
             reply_markup=main_menu(vehicle is not None),
         )
         return
 
+    candidates = list(recommended)
+    sort_label = "рекомендуемые"
+    if parsed_query.sort_mode == "price":
+        candidates.sort(key=lambda item: (item.min_price, item.min_delivery_days))
+        sort_label = "сначала дешевле"
+    elif parsed_query.sort_mode == "speed":
+        candidates.sort(key=lambda item: (item.min_delivery_days, item.min_price))
+        sort_label = "сначала быстрее"
+
     visible = candidates[:5]
     await state.update_data(
         last_parts=[serialize_candidate(item) for item in visible],
-        last_parts_recommended=[serialize_candidate(item) for item in visible],
-        last_query=query,
+        last_parts_recommended=[
+            serialize_candidate(item) for item in recommended[:20]
+        ],
+        last_query=parsed_query.raw,
         last_parent_id=parent_id,
         last_vehicle=(
             {
@@ -229,7 +242,8 @@ async def send_search_results(
 
     await message.answer(
         f"{vehicle_block}"
-        f"Запрос: <b>{escape(query)}</b>\n"
+        f"Запрос: <b>{escape(parsed_query.raw)}</b>\n"
+        f"Сортировка: <b>{escape(sort_label)}</b>\n"
         f"Найдено вариантов: <b>{len(candidates)}</b>\n\n"
         f"{body}\n\n"
         f"<i>{escape(note)}</i>",
@@ -795,8 +809,9 @@ async def sort_parts_callback(callback: CallbackQuery, state: FSMContext):
     else:
         sort_label = "рекомендуемые"
 
+    visible = candidates[:5]
     await state.update_data(
-        last_parts=[serialize_candidate(item) for item in candidates]
+        last_parts=[serialize_candidate(item) for item in visible]
     )
 
     query = data.get("last_query") or "запчасть"
@@ -816,7 +831,7 @@ async def sort_parts_callback(callback: CallbackQuery, state: FSMContext):
     vehicle_block = f"{vehicle_summary(vehicle)}\n\n" if vehicle else ""
     body = "\n\n".join(
         candidate_text(index + 1, candidate)
-        for index, candidate in enumerate(candidates)
+        for index, candidate in enumerate(visible)
     )
 
     await callback.message.edit_text(
@@ -825,7 +840,7 @@ async def sort_parts_callback(callback: CallbackQuery, state: FSMContext):
         f"Сортировка: <b>{escape(sort_label)}</b>\n\n"
         f"{body}\n\n"
         f"<i>{escape(note)}</i>",
-        reply_markup=parts_results_keyboard(candidates, parent_id),
+        reply_markup=parts_results_keyboard(visible, parent_id),
     )
 
 
