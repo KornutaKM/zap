@@ -14,12 +14,13 @@ from aiogram.types import BotCommand, CallbackQuery, Message
 from app.bootstrap import build_app_services
 from app.catalog import get_node
 from app.config import settings
-from app.db import add_favorite, add_shopping_item, change_shopping_quantity, clear_shopping_list, create_price_alert, delete_price_alert, delete_purchase_quote, delete_vehicle, get_purchase_quote, get_search_history_item, get_vehicle, get_vehicle_by_id, init_db, list_favorites, list_price_alerts, list_price_history, list_purchase_quotes, list_recent_searches, list_shopping_items, list_vehicles, record_price_observations, record_search, remove_favorite, remove_shopping_item, save_purchase_quote, save_vehicle, set_active_vehicle, set_vehicle_modification, update_vehicle_from_resolution
+from app.db import add_favorite, add_shopping_item, change_shopping_quantity, clear_shopping_list, create_price_alert, delete_price_alert, delete_purchase_quote, delete_vehicle, get_customer_order, get_purchase_quote, get_search_history_item, get_vehicle, get_vehicle_by_id, init_db, list_customer_orders, list_favorites, list_price_alerts, list_price_history, list_purchase_quotes, list_recent_searches, list_shopping_items, list_vehicles, record_price_observations, record_search, remove_favorite, remove_shopping_item, save_purchase_quote, save_vehicle, set_active_vehicle, set_vehicle_modification, update_vehicle_from_resolution
 from app.domain import Vehicle
 from app.alert_worker import price_alert_loop
 from app.health import readiness
 from app.middleware import RateLimitMiddleware
 from app.observability import configure_logging, log_event
+from app.orders import checkout_ready_order, confirm_revalidated_prices, create_order_from_plan, mark_manual_group_placed, refresh_order_checkout_status, revalidate_order
 from app.commercial_rules import parse_provider_rules
 from app.price_history import summarize_price_history
 from app.procurement import PurchaseRequest, compare_purchase_plans, deserialize_purchase_plan, optimize_purchase, requests_from_plan, serialize_purchase_plan
@@ -36,6 +37,7 @@ from app.ui import (
     BTN_GARAGE,
     BTN_HISTORY,
     BTN_MODEL_CATALOG,
+    BTN_ORDERS,
     BTN_QUOTES,
     BTN_SEARCH,
     BTN_SERVICE,
@@ -52,6 +54,9 @@ from app.ui import (
     history_keyboard,
     main_menu,
     modification_keyboard,
+    order_detail_keyboard,
+    order_detail_text,
+    orders_keyboard,
     candidate_detail_text,
     candidate_text,
     part_detail_keyboard,
@@ -109,6 +114,7 @@ providers = services.providers
 fitment_catalog = services.fitment_catalog
 search_service = services.search_service
 vehicle_resolver = services.vehicle_resolver
+checkout_registry = services.checkout_registry
 provider_commercial_rules = parse_provider_rules(
     app_settings.procurement_provider_rules_json
 )
@@ -1434,6 +1440,317 @@ async def shopping_plan_callback(callback: CallbackQuery, state: FSMContext):
     )
 
 
+async def show_order(
+    message: Message,
+    user_id: int,
+    order_id: int,
+    *,
+    edit: bool = False,
+) -> None:
+    loaded = await get_customer_order(user_id, order_id)
+    if loaded is None:
+        await message.answer("Заказ не найден.")
+        return
+
+    order, groups, lines, events = loaded
+    text = order_detail_text(order, groups, lines, events)
+    keyboard = order_detail_keyboard(order, groups)
+    if edit:
+        await message.edit_text(text, reply_markup=keyboard)
+    else:
+        await message.answer(text, reply_markup=keyboard)
+
+
+@dp.message(Command("orders"))
+@dp.message(F.text == BTN_ORDERS)
+async def orders_button(message: Message):
+    orders = await list_customer_orders(message.from_user.id)
+    if not orders:
+        await message.answer(
+            "Заказов пока нет.\n"
+            "Создайте заказ из рассчитанного плана закупки или сохранённого расчёта.",
+            reply_markup=main_menu((await get_vehicle(message.from_user.id)) is not None),
+        )
+        return
+
+    await message.answer(
+        "<b>Заказы</b>\n"
+        "Заказ — это отдельный жизненный цикл после расчёта.",
+        reply_markup=orders_keyboard(orders),
+    )
+
+
+@dp.callback_query(F.data == "order:list")
+async def order_list_callback(callback: CallbackQuery):
+    await callback.answer()
+    if callback.message is None:
+        return
+    orders = await list_customer_orders(callback.from_user.id)
+    if not orders:
+        await callback.message.edit_text("Заказов пока нет.")
+        return
+    await callback.message.edit_text(
+        "<b>Заказы</b>",
+        reply_markup=orders_keyboard(orders),
+    )
+
+
+@dp.callback_query(F.data.startswith("order:open:"))
+async def order_open_callback(callback: CallbackQuery):
+    await callback.answer()
+    if callback.message is None:
+        return
+    try:
+        order_id = int((callback.data or "").rsplit(":", 1)[1])
+    except ValueError:
+        return
+    await show_order(
+        callback.message,
+        callback.from_user.id,
+        order_id,
+        edit=True,
+    )
+
+
+@dp.callback_query(F.data.startswith("order:create:plan:"))
+async def order_create_plan_callback(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    if callback.message is None:
+        return
+
+    try:
+        index = int((callback.data or "").rsplit(":", 1)[1])
+    except ValueError:
+        return
+
+    data = await state.get_data()
+    raw_plans = data.get("last_purchase_plans") or []
+    if index < 0 or index >= len(raw_plans):
+        await callback.message.answer("Расчёт устарел. Выполните его ещё раз.")
+        return
+
+    plan = deserialize_purchase_plan(raw_plans[index])
+    order = await create_order_from_plan(
+        callback.from_user.id,
+        plan,
+        vehicle_id=data.get("last_purchase_vehicle_id"),
+        shipping_fee=app_settings.procurement_shipping_fee,
+        free_threshold=app_settings.procurement_free_shipping_threshold,
+        provider_rules=provider_commercial_rules,
+    )
+    await show_order(
+        callback.message,
+        callback.from_user.id,
+        order.id,
+        edit=True,
+    )
+
+
+@dp.callback_query(F.data.startswith("order:create:quote:"))
+async def order_create_quote_callback(callback: CallbackQuery):
+    await callback.answer()
+    if callback.message is None:
+        return
+
+    try:
+        quote_id = int((callback.data or "").rsplit(":", 1)[1])
+    except ValueError:
+        return
+
+    loaded = await get_purchase_quote(callback.from_user.id, quote_id)
+    if loaded is None:
+        await callback.message.answer("Расчёт не найден.")
+        return
+
+    quote, snapshot = loaded
+    try:
+        plan = deserialize_purchase_plan(snapshot)
+    except (KeyError, TypeError, ValueError):
+        await callback.message.answer("Snapshot расчёта повреждён.")
+        return
+
+    order = await create_order_from_plan(
+        callback.from_user.id,
+        plan,
+        vehicle_id=quote.vehicle_id,
+        source_quote_id=quote.id,
+        shipping_fee=app_settings.procurement_shipping_fee,
+        free_threshold=app_settings.procurement_free_shipping_threshold,
+        provider_rules=provider_commercial_rules,
+    )
+    await show_order(
+        callback.message,
+        callback.from_user.id,
+        order.id,
+        edit=True,
+    )
+
+
+@dp.callback_query(F.data.startswith("order:revalidate:"))
+async def order_revalidate_callback(callback: CallbackQuery):
+    await callback.answer()
+    if callback.message is None:
+        return
+
+    try:
+        order_id = int((callback.data or "").rsplit(":", 1)[1])
+    except ValueError:
+        return
+
+    loaded = await get_customer_order(callback.from_user.id, order_id)
+    if loaded is None:
+        await callback.message.answer("Заказ не найден.")
+        return
+    order, _, _, _ = loaded
+
+    vehicle = None
+    if order.vehicle_id is not None:
+        vehicle = await get_vehicle_by_id(callback.from_user.id, order.vehicle_id)
+    if vehicle is None:
+        vehicle = await get_vehicle(callback.from_user.id)
+
+    result = await revalidate_order(
+        callback.from_user.id,
+        order_id,
+        vehicle=vehicle,
+        search_service=search_service,
+        shipping_fee=app_settings.procurement_shipping_fee,
+        free_threshold=app_settings.procurement_free_shipping_threshold,
+        provider_rules=provider_commercial_rules,
+    )
+    if result is None:
+        await callback.message.answer("Заказ не найден.")
+        return
+
+    if result.missing_lines:
+        await callback.message.answer(
+            "Не подтверждено у выбранных поставщиков:\n"
+            + "\n".join(f"• {escape(item)}" for item in result.missing_lines[:12])
+        )
+    elif result.changed_lines:
+        await callback.message.answer(
+            "После повторной проверки изменились цены:\n"
+            + "\n".join(f"• {escape(item)}" for item in result.changed_lines[:12])
+            + "\n\nПроверьте итог и подтвердите новые цены."
+        )
+
+    await show_order(
+        callback.message,
+        callback.from_user.id,
+        order_id,
+        edit=True,
+    )
+
+
+@dp.callback_query(F.data.startswith("order:confirmprices:"))
+async def order_confirm_prices_callback(callback: CallbackQuery):
+    await callback.answer()
+    if callback.message is None:
+        return
+    try:
+        order_id = int((callback.data or "").rsplit(":", 1)[1])
+    except ValueError:
+        return
+
+    updated = await confirm_revalidated_prices(callback.from_user.id, order_id)
+    if updated is None:
+        await callback.message.answer("Заказ не найден.")
+        return
+
+    await show_order(
+        callback.message,
+        callback.from_user.id,
+        order_id,
+        edit=True,
+    )
+
+
+@dp.callback_query(F.data.startswith("order:checkout:"))
+async def order_checkout_callback(callback: CallbackQuery):
+    await callback.answer("Начинаю оформление")
+    if callback.message is None:
+        return
+    try:
+        order_id = int((callback.data or "").rsplit(":", 1)[1])
+    except ValueError:
+        return
+
+    updated = await checkout_ready_order(
+        callback.from_user.id,
+        order_id,
+        checkout_registry,
+    )
+    if updated is None:
+        await callback.message.answer("Заказ не найден.")
+        return
+
+    await show_order(
+        callback.message,
+        callback.from_user.id,
+        order_id,
+        edit=True,
+    )
+
+
+@dp.callback_query(F.data.startswith("order:refresh:"))
+async def order_refresh_callback(callback: CallbackQuery):
+    await callback.answer()
+    if callback.message is None:
+        return
+    try:
+        order_id = int((callback.data or "").rsplit(":", 1)[1])
+    except ValueError:
+        return
+
+    updated = await refresh_order_checkout_status(
+        callback.from_user.id,
+        order_id,
+        checkout_registry,
+    )
+    if updated is None:
+        await callback.message.answer("Заказ не найден.")
+        return
+
+    await show_order(
+        callback.message,
+        callback.from_user.id,
+        order_id,
+        edit=True,
+    )
+
+
+@dp.callback_query(F.data.startswith("order:manual:"))
+async def order_manual_callback(callback: CallbackQuery):
+    await callback.answer()
+    if callback.message is None:
+        return
+
+    parts = (callback.data or "").split(":")
+    if len(parts) != 4:
+        return
+    try:
+        order_id = int(parts[2])
+        group_id = int(parts[3])
+    except ValueError:
+        return
+
+    updated = await mark_manual_group_placed(
+        callback.from_user.id,
+        order_id,
+        group_id,
+    )
+    if updated is None:
+        await callback.message.answer("Заказ не найден.")
+        return
+
+    await show_order(
+        callback.message,
+        callback.from_user.id,
+        order_id,
+        edit=True,
+    )
+
+
 @dp.message(Command("quotes"))
 @dp.message(F.text == BTN_QUOTES)
 async def quotes_button(message: Message):
@@ -2222,6 +2539,7 @@ async def main():
             BotCommand(command="works", description="Подбор по списку работ"),
             BotCommand(command="shopping", description="Список закупки"),
             BotCommand(command="quotes", description="Сохранённые расчёты"),
+            BotCommand(command="orders", description="Мои заказы"),
             BotCommand(command="status", description="Статус источников"),
         ]
     )
