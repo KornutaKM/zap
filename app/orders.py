@@ -287,16 +287,23 @@ async def revalidate_order(
             shipping_total=shipping_total,
             grand_total=item_total + shipping_total,
         )
-        target_status = "price_changed" if changed else "ready"
+        if changed:
+            target_status = "price_changed"
+            status_message = "Цены изменились после повторной проверки."
+        elif not delivery_snapshot_is_complete(order.delivery_snapshot):
+            target_status = "needs_delivery"
+            status_message = (
+                "Позиции подтверждены; перед оформлением нужны данные доставки."
+            )
+        else:
+            target_status = "ready"
+            status_message = "Все позиции, цены и данные доставки подтверждены."
+
         updated = await update_order_status(
             user_id,
             order_id,
             target_status,
-            message=(
-                "Цены изменились после повторной проверки."
-                if changed
-                else "Все позиции и цены подтверждены."
-            ),
+            message=status_message,
         )
 
     if updated is None:
@@ -366,11 +373,22 @@ async def confirm_revalidated_prices(
             status="ready",
         )
 
+    target_status = (
+        "ready"
+        if delivery_snapshot_is_complete(order.delivery_snapshot)
+        else "needs_delivery"
+    )
     updated = await update_order_status(
         user_id,
         order_id,
-        "ready",
-        message="Пользователь подтвердил обновлённые цены.",
+        target_status,
+        message=(
+            "Пользователь подтвердил обновлённые цены."
+            if target_status == "ready"
+            else (
+                "Цены подтверждены; перед оформлением нужны данные доставки."
+            )
+        ),
     )
     return updated
 
