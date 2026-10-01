@@ -20,7 +20,7 @@ from app.alert_worker import price_alert_loop
 from app.health import readiness
 from app.middleware import RateLimitMiddleware
 from app.observability import configure_logging, log_event
-from app.orders import checkout_ready_order, confirm_revalidated_prices, create_order_from_plan, mark_manual_group_placed, refresh_order_checkout_status, revalidate_order
+from app.orders import cancel_local_order, checkout_ready_order, confirm_revalidated_prices, create_order_from_plan, mark_manual_group_placed, refresh_order_checkout_status, revalidate_order
 from app.commercial_rules import parse_provider_rules
 from app.price_history import summarize_price_history
 from app.procurement import PurchaseRequest, compare_purchase_plans, deserialize_purchase_plan, optimize_purchase, requests_from_plan, serialize_purchase_plan
@@ -1656,6 +1656,42 @@ async def order_confirm_prices_callback(callback: CallbackQuery):
     if updated is None:
         await callback.message.answer("Заказ не найден.")
         return
+
+    await show_order(
+        callback.message,
+        callback.from_user.id,
+        order_id,
+        edit=True,
+    )
+
+
+@dp.callback_query(F.data.startswith("order:cancel:"))
+async def order_cancel_callback(callback: CallbackQuery):
+    await callback.answer()
+    if callback.message is None:
+        return
+
+    try:
+        order_id = int((callback.data or "").rsplit(":", 1)[1])
+    except ValueError:
+        return
+
+    before = await get_customer_order(callback.from_user.id, order_id)
+    if before is None:
+        await callback.message.answer("Заказ не найден.")
+        return
+
+    previous_status = before[0].status
+    updated = await cancel_local_order(callback.from_user.id, order_id)
+    if updated is None:
+        await callback.message.answer("Заказ не найден.")
+        return
+
+    if updated.status == previous_status and updated.status != "cancelled":
+        await callback.message.answer(
+            "Этот заказ уже начал внешнее оформление. "
+            "Локальная отмена не будет имитировать отмену у поставщика."
+        )
 
     await show_order(
         callback.message,
