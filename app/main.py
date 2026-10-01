@@ -14,6 +14,7 @@ from app.catalog import get_node
 from app.config import settings
 from app.db import add_favorite, create_price_alert, delete_price_alert, delete_vehicle, get_search_history_item, get_vehicle, init_db, list_favorites, list_price_alerts, list_recent_searches, list_vehicles, record_search, remove_favorite, save_vehicle, set_active_vehicle, set_vehicle_modification, update_price_alert
 from app.domain import Vehicle
+from app.external_fitment import GenericHttpFitmentCatalog, HttpFitmentConfig
 from app.external_provider import GenericHttpProvider, HttpProviderConfig
 from app.fitment import DemoFitmentCatalog
 from app.price_alerts import check_all_price_alerts
@@ -75,7 +76,10 @@ class CatalogFlow(StatesGroup):
 
 
 app_settings = settings()
-providers = [MockProvider(), ExistProvider(), AutodocProvider()]
+providers = [ExistProvider(), AutodocProvider()]
+
+if app_settings.demo_provider_enabled:
+    providers.insert(0, MockProvider())
 
 if app_settings.external_provider_enabled and app_settings.external_provider_base_url:
     providers.append(
@@ -91,11 +95,27 @@ if app_settings.external_provider_enabled and app_settings.external_provider_bas
             )
         )
     )
+
+fitment_catalog = None
+if app_settings.fitment_api_enabled and app_settings.fitment_api_base_url:
+    fitment_catalog = GenericHttpFitmentCatalog(
+        HttpFitmentConfig(
+            base_url=app_settings.fitment_api_base_url,
+            resolve_path=app_settings.fitment_api_resolve_path,
+            api_key=app_settings.fitment_api_key,
+            api_key_header=app_settings.fitment_api_key_header,
+            auth_scheme=app_settings.fitment_api_auth_scheme,
+            allow_http=app_settings.fitment_api_allow_http,
+        )
+    )
+elif app_settings.demo_fitment_enabled:
+    fitment_catalog = DemoFitmentCatalog()
+
 search_service = PartsSearchService(
     providers,
     cache_ttl_seconds=app_settings.search_cache_ttl_seconds,
     provider_timeout_seconds=app_settings.provider_timeout_seconds,
-    fitment_catalog=DemoFitmentCatalog(),
+    fitment_catalog=fitment_catalog,
 )
 dp = Dispatcher()
 
