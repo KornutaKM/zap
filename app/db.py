@@ -2,12 +2,12 @@ from datetime import datetime, timezone
 from decimal import Decimal
 import json
 
-from sqlalchemy import BigInteger, Boolean, DateTime, Integer, Numeric, String, Text, func, select, text, update
+from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, Integer, Numeric, String, Text, func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 from app.config import settings
-from app.domain import FavoritePart, Offer, PriceAlert, PriceHistoryPoint, SavedPurchaseQuote, SearchHistoryItem, ShoppingListItem, Vehicle
+from app.domain import CustomerOrder, FavoritePart, Offer, OrderEvent, OrderLine, PriceAlert, PriceHistoryPoint, SavedPurchaseQuote, SearchHistoryItem, ShoppingListItem, SupplierOrderGroup, Vehicle
 
 
 class Base(DeclarativeBase):
@@ -101,6 +101,72 @@ class PriceHistoryRow(Base):
     price: Mapped[Decimal] = mapped_column(Numeric(12, 2))
     delivery_days: Mapped[int] = mapped_column(Integer)
     observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+
+class CustomerOrderRow(Base):
+    __tablename__ = "orders"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    telegram_user_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    vehicle_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    source_quote_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    status: Mapped[str] = mapped_column(String(40), default="draft", index=True)
+    item_total: Mapped[Decimal] = mapped_column(Numeric(12, 2))
+    shipping_total: Mapped[Decimal] = mapped_column(Numeric(12, 2))
+    grand_total: Mapped[Decimal] = mapped_column(Numeric(12, 2))
+    provider_count: Mapped[int] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class SupplierOrderGroupRow(Base):
+    __tablename__ = "order_provider_groups"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    order_id: Mapped[int] = mapped_column(ForeignKey("orders.id"), index=True)
+    provider: Mapped[str] = mapped_column(String(120), index=True)
+    status: Mapped[str] = mapped_column(String(40), default="draft", index=True)
+    item_total: Mapped[Decimal] = mapped_column(Numeric(12, 2))
+    shipping_total: Mapped[Decimal] = mapped_column(Numeric(12, 2))
+    grand_total: Mapped[Decimal] = mapped_column(Numeric(12, 2))
+    checkout_mode: Mapped[str] = mapped_column(String(40), default="deeplink")
+    external_order_id: Mapped[str | None] = mapped_column(String(160), nullable=True, index=True)
+    checkout_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_error: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class OrderLineRow(Base):
+    __tablename__ = "order_lines"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    order_id: Mapped[int] = mapped_column(ForeignKey("orders.id"), index=True)
+    group_id: Mapped[int] = mapped_column(ForeignKey("order_provider_groups.id"), index=True)
+    provider: Mapped[str] = mapped_column(String(120), index=True)
+    brand: Mapped[str] = mapped_column(String(120), index=True)
+    article: Mapped[str] = mapped_column(String(120), index=True)
+    title: Mapped[str] = mapped_column(String(250))
+    quantity: Mapped[int] = mapped_column(Integer)
+    unit_price: Mapped[Decimal] = mapped_column(Numeric(12, 2))
+    delivery_days: Mapped[int] = mapped_column(Integer)
+    offer_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    in_stock: Mapped[bool] = mapped_column(Boolean, default=True)
+    price_confirmed: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+class OrderEventRow(Base):
+    __tablename__ = "order_events"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    order_id: Mapped[int] = mapped_column(ForeignKey("orders.id"), index=True)
+    event_type: Mapped[str] = mapped_column(String(80), index=True)
+    message: Mapped[str] = mapped_column(String(500))
+    from_status: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    to_status: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    provider: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    payload_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
 
 
 class GarageVehicleRow(Base):
@@ -967,3 +1033,354 @@ async def list_price_history(
             )
             for row in rows
         ]
+
+
+
+def _to_customer_order(row: CustomerOrderRow) -> CustomerOrder:
+    return CustomerOrder(
+        id=row.id,
+        telegram_user_id=row.telegram_user_id,
+        vehicle_id=row.vehicle_id,
+        source_quote_id=row.source_quote_id,
+        status=row.status,
+        item_total=Decimal(str(row.item_total)),
+        shipping_total=Decimal(str(row.shipping_total)),
+        grand_total=Decimal(str(row.grand_total)),
+        provider_count=row.provider_count,
+        created_at=row.created_at.isoformat() if row.created_at else None,
+        updated_at=row.updated_at.isoformat() if row.updated_at else None,
+    )
+
+
+def _to_supplier_group(row: SupplierOrderGroupRow) -> SupplierOrderGroup:
+    return SupplierOrderGroup(
+        id=row.id,
+        order_id=row.order_id,
+        provider=row.provider,
+        status=row.status,
+        item_total=Decimal(str(row.item_total)),
+        shipping_total=Decimal(str(row.shipping_total)),
+        grand_total=Decimal(str(row.grand_total)),
+        checkout_mode=row.checkout_mode,
+        external_order_id=row.external_order_id,
+        checkout_url=row.checkout_url,
+        last_error=row.last_error,
+    )
+
+
+def _to_order_line(row: OrderLineRow) -> OrderLine:
+    return OrderLine(
+        id=row.id,
+        order_id=row.order_id,
+        group_id=row.group_id,
+        provider=row.provider,
+        brand=row.brand,
+        article=row.article,
+        title=row.title,
+        quantity=row.quantity,
+        unit_price=Decimal(str(row.unit_price)),
+        delivery_days=row.delivery_days,
+        offer_url=row.offer_url,
+        in_stock=row.in_stock,
+        price_confirmed=row.price_confirmed,
+    )
+
+
+def _to_order_event(row: OrderEventRow) -> OrderEvent:
+    return OrderEvent(
+        id=row.id,
+        order_id=row.order_id,
+        event_type=row.event_type,
+        message=row.message,
+        from_status=row.from_status,
+        to_status=row.to_status,
+        provider=row.provider,
+        created_at=row.created_at.isoformat() if row.created_at else None,
+    )
+
+
+async def create_customer_order(
+    user_id: int,
+    *,
+    vehicle_id: int | None,
+    source_quote_id: int | None,
+    item_total,
+    shipping_total,
+    grand_total,
+    groups: list[dict],
+) -> CustomerOrder:
+    async with Session() as session:
+        order = CustomerOrderRow(
+            telegram_user_id=user_id,
+            vehicle_id=vehicle_id,
+            source_quote_id=source_quote_id,
+            status="draft",
+            item_total=Decimal(str(item_total)),
+            shipping_total=Decimal(str(shipping_total)),
+            grand_total=Decimal(str(grand_total)),
+            provider_count=len(groups),
+        )
+        session.add(order)
+        await session.flush()
+
+        for group_data in groups:
+            group = SupplierOrderGroupRow(
+                order_id=order.id,
+                provider=group_data["provider"],
+                status="draft",
+                item_total=Decimal(str(group_data["item_total"])),
+                shipping_total=Decimal(str(group_data["shipping_total"])),
+                grand_total=Decimal(str(group_data["grand_total"])),
+                checkout_mode=group_data.get("checkout_mode", "deeplink"),
+                checkout_url=group_data.get("checkout_url"),
+            )
+            session.add(group)
+            await session.flush()
+
+            for line_data in group_data.get("lines", []):
+                session.add(
+                    OrderLineRow(
+                        order_id=order.id,
+                        group_id=group.id,
+                        provider=group.provider,
+                        brand=line_data["brand"],
+                        article=line_data["article"],
+                        title=line_data["title"],
+                        quantity=int(line_data["quantity"]),
+                        unit_price=Decimal(str(line_data["unit_price"])),
+                        delivery_days=int(line_data["delivery_days"]),
+                        offer_url=line_data.get("offer_url"),
+                        in_stock=bool(line_data.get("in_stock", True)),
+                        price_confirmed=False,
+                    )
+                )
+
+        session.add(
+            OrderEventRow(
+                order_id=order.id,
+                event_type="order_created",
+                message="Черновик заказа создан из плана закупки.",
+                to_status="draft",
+            )
+        )
+        await session.commit()
+        await session.refresh(order)
+        return _to_customer_order(order)
+
+
+async def list_customer_orders(
+    user_id: int,
+    limit: int = 20,
+) -> list[CustomerOrder]:
+    async with Session() as session:
+        rows = (
+            await session.scalars(
+                select(CustomerOrderRow)
+                .where(CustomerOrderRow.telegram_user_id == user_id)
+                .order_by(CustomerOrderRow.id.desc())
+                .limit(limit)
+            )
+        ).all()
+        return [_to_customer_order(row) for row in rows]
+
+
+async def get_customer_order(
+    user_id: int,
+    order_id: int,
+) -> tuple[CustomerOrder, list[SupplierOrderGroup], list[OrderLine], list[OrderEvent]] | None:
+    async with Session() as session:
+        order = await session.scalar(
+            select(CustomerOrderRow).where(
+                CustomerOrderRow.id == order_id,
+                CustomerOrderRow.telegram_user_id == user_id,
+            )
+        )
+        if order is None:
+            return None
+
+        groups = (
+            await session.scalars(
+                select(SupplierOrderGroupRow)
+                .where(SupplierOrderGroupRow.order_id == order_id)
+                .order_by(SupplierOrderGroupRow.id.asc())
+            )
+        ).all()
+        lines = (
+            await session.scalars(
+                select(OrderLineRow)
+                .where(OrderLineRow.order_id == order_id)
+                .order_by(OrderLineRow.id.asc())
+            )
+        ).all()
+        events = (
+            await session.scalars(
+                select(OrderEventRow)
+                .where(OrderEventRow.order_id == order_id)
+                .order_by(OrderEventRow.id.desc())
+                .limit(50)
+            )
+        ).all()
+
+        return (
+            _to_customer_order(order),
+            [_to_supplier_group(row) for row in groups],
+            [_to_order_line(row) for row in lines],
+            [_to_order_event(row) for row in events],
+        )
+
+
+async def append_order_event(
+    order_id: int,
+    *,
+    event_type: str,
+    message: str,
+    from_status: str | None = None,
+    to_status: str | None = None,
+    provider: str | None = None,
+    payload: dict | None = None,
+) -> None:
+    async with Session() as session:
+        session.add(
+            OrderEventRow(
+                order_id=order_id,
+                event_type=event_type[:80],
+                message=message[:500],
+                from_status=from_status,
+                to_status=to_status,
+                provider=provider[:120] if provider else None,
+                payload_json=(
+                    json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+                    if payload is not None
+                    else None
+                ),
+            )
+        )
+        await session.commit()
+
+
+async def update_order_status(
+    user_id: int,
+    order_id: int,
+    status: str,
+    *,
+    message: str,
+) -> CustomerOrder | None:
+    async with Session() as session:
+        row = await session.scalar(
+            select(CustomerOrderRow).where(
+                CustomerOrderRow.id == order_id,
+                CustomerOrderRow.telegram_user_id == user_id,
+            )
+        )
+        if row is None:
+            return None
+        previous = row.status
+        row.status = status
+        row.updated_at = datetime.now(timezone.utc)
+        session.add(
+            OrderEventRow(
+                order_id=order_id,
+                event_type="order_status",
+                message=message[:500],
+                from_status=previous,
+                to_status=status,
+            )
+        )
+        await session.commit()
+        await session.refresh(row)
+        return _to_customer_order(row)
+
+
+async def update_order_line_confirmation(
+    order_id: int,
+    line_id: int,
+    *,
+    unit_price,
+    delivery_days: int,
+    in_stock: bool,
+    price_confirmed: bool,
+    offer_url: str | None,
+) -> None:
+    async with Session() as session:
+        row = await session.scalar(
+            select(OrderLineRow).where(
+                OrderLineRow.id == line_id,
+                OrderLineRow.order_id == order_id,
+            )
+        )
+        if row is None:
+            return
+        row.unit_price = Decimal(str(unit_price))
+        row.delivery_days = max(0, delivery_days)
+        row.in_stock = in_stock
+        row.price_confirmed = price_confirmed
+        row.offer_url = offer_url
+        await session.commit()
+
+
+async def update_supplier_group_checkout(
+    order_id: int,
+    group_id: int,
+    *,
+    status: str,
+    checkout_mode: str | None = None,
+    external_order_id: str | None = None,
+    checkout_url: str | None = None,
+    last_error: str | None = None,
+) -> SupplierOrderGroup | None:
+    async with Session() as session:
+        row = await session.scalar(
+            select(SupplierOrderGroupRow).where(
+                SupplierOrderGroupRow.id == group_id,
+                SupplierOrderGroupRow.order_id == order_id,
+            )
+        )
+        if row is None:
+            return None
+
+        row.status = status
+        if checkout_mode is not None:
+            row.checkout_mode = checkout_mode
+        row.external_order_id = external_order_id
+        row.checkout_url = checkout_url
+        row.last_error = last_error
+        row.updated_at = datetime.now(timezone.utc)
+
+        session.add(
+            OrderEventRow(
+                order_id=order_id,
+                event_type="supplier_status",
+                message=f"Статус поставщика {row.provider}: {status}",
+                provider=row.provider,
+                to_status=status,
+            )
+        )
+        await session.commit()
+        await session.refresh(row)
+        return _to_supplier_group(row)
+
+
+async def replace_order_totals(
+    user_id: int,
+    order_id: int,
+    *,
+    item_total,
+    shipping_total,
+    grand_total,
+) -> CustomerOrder | None:
+    async with Session() as session:
+        row = await session.scalar(
+            select(CustomerOrderRow).where(
+                CustomerOrderRow.id == order_id,
+                CustomerOrderRow.telegram_user_id == user_id,
+            )
+        )
+        if row is None:
+            return None
+        row.item_total = Decimal(str(item_total))
+        row.shipping_total = Decimal(str(shipping_total))
+        row.grand_total = Decimal(str(grand_total))
+        row.updated_at = datetime.now(timezone.utc)
+        await session.commit()
+        await session.refresh(row)
+        return _to_customer_order(row)
