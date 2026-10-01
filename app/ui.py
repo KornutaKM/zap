@@ -8,7 +8,7 @@ from aiogram.types import (
 )
 
 from app.catalog import get_children, get_node
-from app.domain import Offer, PartCandidate, Vehicle
+from app.domain import FavoritePart, Offer, PartCandidate, SearchHistoryItem, Vehicle
 from app.service_kits import BuiltKit, SERVICE_KITS
 from app.vehicle_catalog import VehicleGeneration
 
@@ -16,6 +16,8 @@ BTN_SEARCH = "🔎 Найти запчасть"
 BTN_CATALOG = "📚 Каталог"
 BTN_SERVICE = "🛠 ТО и обслуживание"
 BTN_GARAGE = "🚗 Мой автомобиль"
+BTN_FAVORITES = "⭐ Избранное"
+BTN_HISTORY = "🕘 История"
 BTN_ADD_CAR = "🚗 Добавить автомобиль"
 BTN_MODEL_CATALOG = "📚 Каталог по модели"
 BTN_ARTICLE = "🔎 Найти по артикулу"
@@ -27,11 +29,13 @@ def main_menu(has_vehicle: bool) -> ReplyKeyboardMarkup:
         rows = [
             [KeyboardButton(text=BTN_SEARCH), KeyboardButton(text=BTN_CATALOG)],
             [KeyboardButton(text=BTN_SERVICE), KeyboardButton(text=BTN_GARAGE)],
+            [KeyboardButton(text=BTN_FAVORITES), KeyboardButton(text=BTN_HISTORY)],
         ]
     else:
         rows = [
             [KeyboardButton(text=BTN_ADD_CAR)],
             [KeyboardButton(text=BTN_MODEL_CATALOG), KeyboardButton(text=BTN_ARTICLE)],
+            [KeyboardButton(text=BTN_FAVORITES), KeyboardButton(text=BTN_HISTORY)],
         ]
 
     return ReplyKeyboardMarkup(
@@ -113,6 +117,7 @@ def parts_results_keyboard(
 
 def part_detail_keyboard(index: int, parent_id: str | None = None) -> InlineKeyboardMarkup:
     rows = [
+        [InlineKeyboardButton(text="⭐ В избранное", callback_data=f"favorite:add:{index}")],
         [InlineKeyboardButton(text="← К вариантам", callback_data="partlist:back")],
         [
             InlineKeyboardButton(text="🔎 Новый поиск", callback_data="action:search"),
@@ -269,3 +274,33 @@ def delete_vehicle_confirm_keyboard(vehicle_id: int) -> InlineKeyboardMarkup:
             ]
         ]
     )
+
+
+
+def history_keyboard(items: list[SearchHistoryItem]) -> InlineKeyboardMarkup:
+    rows = [
+        [
+            InlineKeyboardButton(
+                text=f"{item.query[:42]}",
+                callback_data=f"history:run:{item.id}",
+            )
+        ]
+        for item in items[:10]
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def favorites_keyboard(items: list[FavoritePart]) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    for item in items[:20]:
+        rows.append([
+            InlineKeyboardButton(
+                text=f"{item.brand} · {item.article}",
+                callback_data=f"favorite:open:{item.id}",
+            ),
+            InlineKeyboardButton(
+                text="✕",
+                callback_data=f"favorite:delete:{item.id}",
+            ),
+        ])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
