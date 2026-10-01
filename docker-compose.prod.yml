@@ -26,6 +26,19 @@ services:
       timeout: 3s
       retries: 20
 
+  db-init:
+    build: .
+    command: ["python", "-m", "app.db_init"]
+    restart: "no"
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://zap:${POSTGRES_PASSWORD:-zap}@postgres:5432/zap
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   bot:
     build: .
     restart: unless-stopped
@@ -38,8 +51,8 @@ services:
       RATE_LIMIT_BACKEND: redis
       PRICE_ALERT_WORKER_MODE: external
     depends_on:
-      postgres:
-        condition: service_healthy
+      db-init:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
     ports:
@@ -58,8 +71,8 @@ services:
       RATE_LIMIT_BACKEND: redis
       PRICE_ALERT_WORKER_MODE: external
     depends_on:
-      postgres:
-        condition: service_healthy
+      db-init:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
 
