@@ -90,6 +90,7 @@ def build_checkout_registry(settings) -> CheckoutRegistry:
                     api_key_header=settings.checkout_api_key_header,
                     auth_scheme=settings.checkout_api_auth_scheme,
                     allow_http=settings.checkout_api_allow_http,
+                    timeout_seconds=settings.checkout_api_timeout_seconds,
                 )
             )
         )
