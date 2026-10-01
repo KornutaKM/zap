@@ -7,13 +7,30 @@ from aiogram.enums import ParseMode
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
+from aiogram.types import BotCommand, Message
 
-from app.catalog import get_children, get_node
+from app.catalog import get_node
 from app.config import settings
 from app.db import get_vehicle, init_db, save_vehicle
 from app.domain import Vehicle, rank_offers
 from app.providers import AutodocProvider, ExistProvider, MockProvider
+from app.ui import (
+    BTN_ADD_CAR,
+    BTN_ARTICLE,
+    BTN_CANCEL,
+    BTN_CATALOG,
+    BTN_GARAGE,
+    BTN_MODEL_CATALOG,
+    BTN_SEARCH,
+    BTN_SERVICE,
+    cancel_menu,
+    catalog_keyboard,
+    main_menu,
+    offer_text,
+    results_keyboard,
+    vehicle_summary,
+)
+from app.vehicle_parser import parse_vehicle_text
 
 
 class Garage(StatesGroup):
@@ -23,56 +40,19 @@ class Garage(StatesGroup):
     vin = State()
 
 
+class SearchFlow(StatesGroup):
+    query = State()
+
+
+class CatalogFlow(StatesGroup):
+    vehicle = State()
+
+
 providers = [MockProvider(), ExistProvider(), AutodocProvider()]
 dp = Dispatcher()
 
-KNOWN_BRANDS = {
-    "audi", "bmw", "chevrolet", "citroen", "ford", "geely", "haval", "honda",
-    "hyundai", "jeep", "kia", "lada", "lexus", "mazda", "mercedes",
-    "mercedes-benz", "mitsubishi", "nissan", "opel", "peugeot", "porsche",
-    "renault", "skoda", "subaru", "suzuki", "tesla", "toyota", "volkswagen",
-    "volvo", "ваз", "газ", "москвич", "chery", "exeed", "omoda", "jetour"
-}
 
-MULTIWORD_BRANDS = {
-    ("land", "rover"): "Land Rover",
-    ("alfa", "romeo"): "Alfa Romeo",
-    ("mercedes", "benz"): "Mercedes-Benz",
-}
-
-
-def catalog_keyboard(node_id: str) -> InlineKeyboardMarkup:
-    node = get_node(node_id)
-    if node is None:
-        return InlineKeyboardMarkup(inline_keyboard=[])
-
-    rows = [
-        [InlineKeyboardButton(text=child.title, callback_data=f"cat:{child.id}")]
-        for child in get_children(node_id)
-    ]
-
-    if node.parent:
-        rows.append([InlineKeyboardButton(text="← Назад", callback_data=f"cat:{node.parent}")])
-    elif node_id != "root":
-        rows.append([InlineKeyboardButton(text="← В начало", callback_data="cat:root")])
-
-    return InlineKeyboardMarkup(inline_keyboard=rows)
-
-
-def leaf_keyboard(parent_id: str | None) -> InlineKeyboardMarkup:
-    rows = []
-    if parent_id:
-        rows.append([InlineKeyboardButton(text="← Назад", callback_data=f"cat:{parent_id}")])
-    rows.append([InlineKeyboardButton(text="Каталог с начала", callback_data="cat:root")])
-    return InlineKeyboardMarkup(inline_keyboard=rows)
-
-
-def catalog_context_title(brand: str, model: str, year: int | None = None) -> str:
-    year_text = f", {year}" if year else ""
-    return f"{escape(brand)} {escape(model)}{year_text}"
-
-
-async def store_catalog_context(
+async def set_catalog_context(
     state: FSMContext,
     brand: str,
     model: str,
@@ -91,174 +71,65 @@ async def store_catalog_context(
     )
 
 
-async def show_catalog_root(message: Message, state: FSMContext, brand: str, model: str, year: int | None, vin: str | None, source: str) -> None:
-    await store_catalog_context(state, brand, model, year, vin, source)
-    warning = (
-        "Каталог общий для модели. Точную применимость конкретного артикула "
-        "нужно уточнить по году, модификации или VIN."
-        if source == "temporary"
-        else "Пока каталог и предложения демонстрационные; точную применимость подключим отдельным каталогом."
-    )
-    await message.answer(
-        f"<b>{catalog_context_title(brand, model, year)}</b>\n"
-        f"Выберите раздел запчастей.\n\n"
-        f"<i>{warning}</i>",
-        reply_markup=catalog_keyboard("root"),
-    )
-
-
-async def get_catalog_vehicle(state: FSMContext, user_id: int) -> tuple[Vehicle | None, str]:
+async def get_catalog_vehicle(
+    state: FSMContext,
+    user_id: int,
+) -> tuple[Vehicle | None, str]:
     data = await state.get_data()
     ctx = data.get("catalog_vehicle")
     if ctx:
-        vehicle = Vehicle(
-            brand=ctx["brand"],
-            model=ctx["model"],
-            year=ctx.get("year") or 0,
-            vin=ctx.get("vin"),
+        return (
+            Vehicle(
+                brand=ctx["brand"],
+                model=ctx["model"],
+                year=ctx.get("year") or 0,
+                vin=ctx.get("vin"),
+            ),
+            ctx.get("source", "temporary"),
         )
-        return vehicle, ctx.get("source", "temporary")
 
     vehicle = await get_vehicle(user_id)
     return vehicle, "garage" if vehicle else "none"
 
 
-def parse_vehicle_text(text: str) -> tuple[str, str] | None:
-    parts = text.strip().split()
-    if len(parts) < 2:
-        return None
+async def show_catalog_root(
+    message: Message,
+    state: FSMContext,
+    brand: str,
+    model: str,
+    year: int | None,
+    vin: str | None,
+    source: str,
+) -> None:
+    await set_catalog_context(state, brand, model, year, vin, source)
+    year_text = f" · {year}" if year else ""
+    note = (
+        "Общий каталог модели. Перед покупкой конкретной детали нужно уточнить "
+        "год, двигатель или VIN."
+        if source == "temporary"
+        else "Каталог пока демонстрационный. Точную применимость по VIN подключим следующим этапом."
+    )
 
-    if len(parts) >= 3:
-        pair = (parts[0].casefold().rstrip("-"), parts[1].casefold())
-        multiword_brand = MULTIWORD_BRANDS.get(pair)
-        if multiword_brand:
-            return multiword_brand, " ".join(parts[2:])
-
-    first = parts[0].casefold()
-    if first not in KNOWN_BRANDS:
-        return None
-    return parts[0], " ".join(parts[1:])
-
-
-@dp.message(CommandStart())
-async def start(message: Message):
     await message.answer(
-        "<b>Автозапчасти — MVP</b>\n\n"
-        "Можно работать двумя способами:\n"
-        "• добавить автомобиль: /garage\n"
-        "• открыть каталог: /catalog\n"
-        "• написать модель прямо сообщением, например <code>BMW X3 G01</code>\n"
-        "• написать название детали или артикул.\n\n"
-        "<i>Пока используются демонстрационные цены и каталог.</i>"
+        f"🚗 <b>{escape(brand)} {escape(model)}</b>{year_text}\n\n"
+        "<b>Каталог запчастей</b>\n"
+        "Выберите раздел:",
+        reply_markup=catalog_keyboard("root"),
     )
-
-
-@dp.message(Command("garage"))
-async def garage(message: Message, state: FSMContext):
-    current = await get_vehicle(message.from_user.id)
-    if current:
-        vin = current.vin or "не указан"
-        await message.answer(
-            f"<b>Сейчас:</b> {escape(current.brand)} {escape(current.model)}, {current.year}\n"
-            f"VIN: <code>{escape(vin)}</code>\n\n"
-            "Открыть каталог: /catalog\n"
-            "Чтобы заменить авто: /garage_add"
-        )
-        return
-    await state.set_state(Garage.brand)
-    await message.answer("Марка? Например: BMW")
-
-
-@dp.message(Command("garage_add"))
-async def garage_add(message: Message, state: FSMContext):
-    await state.clear()
-    await state.set_state(Garage.brand)
-    await message.answer("Марка?")
-
-
-@dp.message(Garage.brand)
-async def garage_brand(message: Message, state: FSMContext):
-    value = (message.text or "").strip()
-    if len(value) < 2:
-        await message.answer("Введите марку текстом.")
-        return
-    await state.update_data(brand=value)
-    await state.set_state(Garage.model)
-    await message.answer("Модель? Например: X3 G01")
-
-
-@dp.message(Garage.model)
-async def garage_model(message: Message, state: FSMContext):
-    value = (message.text or "").strip()
-    if not value:
-        await message.answer("Введите модель.")
-        return
-    await state.update_data(model=value)
-    await state.set_state(Garage.year)
-    await message.answer("Год выпуска?")
-
-
-@dp.message(Garage.year)
-async def garage_year(message: Message, state: FSMContext):
-    try:
-        year = int((message.text or "").strip())
-    except ValueError:
-        await message.answer("Введите год числом.")
-        return
-    if not 1950 <= year <= 2030:
-        await message.answer("Проверьте год.")
-        return
-    await state.update_data(year=year)
-    await state.set_state(Garage.vin)
-    await message.answer("VIN (17 символов) или - чтобы пропустить.")
-
-
-@dp.message(Garage.vin)
-async def garage_vin(message: Message, state: FSMContext):
-    raw = (message.text or "").strip().upper()
-    vin = None if raw == "-" else raw
-    if vin and len(vin) != 17:
-        await message.answer("VIN должен содержать 17 символов, либо отправь -")
-        return
-
-    data = await state.get_data()
-    vehicle = await save_vehicle(
-        message.from_user.id,
-        data["brand"],
-        data["model"],
-        data["year"],
-        vin,
-    )
-    await state.clear()
     await message.answer(
-        f"Сохранено: <b>{escape(vehicle.brand)} {escape(vehicle.model)}, {vehicle.year}</b>.\n"
-        "Открыть каталог можно командой /catalog или просто написать нужную деталь."
+        f"<i>{note}</i>",
+        reply_markup=main_menu(source == "garage"),
     )
 
 
-@dp.message(Command("catalog"))
-async def catalog_command(message: Message, state: FSMContext):
-    await state.clear()
-    command_parts = (message.text or "").split(maxsplit=1)
-
-    if len(command_parts) == 2 and command_parts[1].strip():
-        parsed = parse_vehicle_text(command_parts[1])
-        if parsed is None:
-            await message.answer(
-                "После /catalog укажите марку и модель, например:\n"
-                "<code>/catalog BMW X3 G01</code>"
-            )
-            return
-        brand, model = parsed
-        await show_catalog_root(message, state, brand, model, None, None, "temporary")
-        return
-
+async def open_catalog_for_saved_vehicle(message: Message, state: FSMContext) -> None:
     vehicle = await get_vehicle(message.from_user.id)
     if vehicle is None:
+        await state.set_state(CatalogFlow.vehicle)
         await message.answer(
-            "В гараже пока нет автомобиля.\n\n"
-            "Можно добавить его через /garage или сразу открыть общий каталог модели:\n"
-            "<code>/catalog BMW X3 G01</code>"
+            "Напишите марку и модель автомобиля.\n"
+            "Например: <code>BMW X3 G01</code>",
+            reply_markup=cancel_menu(),
         )
         return
 
@@ -271,6 +142,290 @@ async def catalog_command(message: Message, state: FSMContext):
         vehicle.vin,
         "garage",
     )
+
+
+async def search_offers(vehicle: Vehicle, query: str):
+    offers = []
+    for provider in providers:
+        offers.extend(await provider.search(vehicle, query))
+    return rank_offers(offers)
+
+
+async def send_search_results(
+    message: Message,
+    vehicle: Vehicle,
+    query: str,
+    parent_id: str | None = None,
+    compatibility_note: str | None = None,
+) -> None:
+    ranked = await search_offers(vehicle, query)
+    if not ranked:
+        await message.answer(
+            "По этому запросу предложений пока нет.",
+            reply_markup=main_menu(True),
+        )
+        return
+
+    body = (
+        offer_text("⭐ Лучший баланс", ranked["best"]) + "\n\n"
+        + offer_text("💰 Самый дешёвый", ranked["cheapest"]) + "\n\n"
+        + offer_text("🚚 Самый быстрый", ranked["fastest"])
+    )
+    note = compatibility_note or "Данные и цены пока демонстрационные."
+
+    await message.answer(
+        f"{vehicle_summary(vehicle)}\n\n"
+        f"Запрос: <b>{escape(query)}</b>\n\n"
+        f"{body}\n\n"
+        f"<i>{escape(note)}</i>",
+        reply_markup=results_keyboard(parent_id),
+    )
+
+
+async def start_search(message: Message, state: FSMContext, article_only: bool = False) -> None:
+    vehicle = await get_vehicle(message.from_user.id)
+    if vehicle is None:
+        await message.answer(
+            "Сначала выберите автомобиль. Можно добавить его в гараж или открыть каталог по модели.",
+            reply_markup=main_menu(False),
+        )
+        return
+
+    await state.set_state(SearchFlow.query)
+    prompt = (
+        "Введите артикул детали.\nНапример: <code>GDB1956</code>"
+        if article_only
+        else "Что нужно найти?\nНапример: <code>передние колодки</code> или <code>масляный фильтр</code>"
+    )
+    await message.answer(prompt, reply_markup=cancel_menu())
+
+
+@dp.message(CommandStart())
+@dp.message(Command("menu"))
+async def start(message: Message, state: FSMContext):
+    await state.clear()
+    vehicle = await get_vehicle(message.from_user.id)
+
+    if vehicle:
+        await message.answer(
+            "<b>Zap — подбор автозапчастей</b>\n\n"
+            f"{vehicle_summary(vehicle)}\n\n"
+            "Выберите действие или просто напишите название детали.",
+            reply_markup=main_menu(True),
+        )
+    else:
+        await message.answer(
+            "<b>Zap — подбор автозапчастей</b>\n\n"
+            "Добавьте автомобиль, откройте каталог по модели "
+            "или найдите деталь по известному артикулу.",
+            reply_markup=main_menu(False),
+        )
+
+
+@dp.message(F.text == BTN_CANCEL)
+async def cancel(message: Message, state: FSMContext):
+    await state.clear()
+    vehicle = await get_vehicle(message.from_user.id)
+    await message.answer(
+        "Отменено.",
+        reply_markup=main_menu(vehicle is not None),
+    )
+
+
+@dp.message(Command("garage"))
+@dp.message(F.text == BTN_GARAGE)
+async def garage(message: Message, state: FSMContext):
+    current = await get_vehicle(message.from_user.id)
+    if current:
+        vin = f"…{current.vin[-4:]}" if current.vin else "не указан"
+        await message.answer(
+            f"{vehicle_summary(current)}\n"
+            f"VIN: <code>{escape(vin)}</code>\n\n"
+            "Чтобы заменить автомобиль, используйте /garage_add.",
+            reply_markup=main_menu(True),
+        )
+        return
+
+    await state.set_state(Garage.brand)
+    await message.answer("Марка автомобиля? Например: <code>BMW</code>", reply_markup=cancel_menu())
+
+
+@dp.message(Command("garage_add"))
+@dp.message(F.text == BTN_ADD_CAR)
+async def garage_add(message: Message, state: FSMContext):
+    await state.clear()
+    await state.set_state(Garage.brand)
+    await message.answer("Марка автомобиля? Например: <code>BMW</code>", reply_markup=cancel_menu())
+
+
+@dp.message(Garage.brand)
+async def garage_brand(message: Message, state: FSMContext):
+    value = (message.text or "").strip()
+    if len(value) < 2:
+        await message.answer("Введите марку текстом.")
+        return
+    await state.update_data(brand=value)
+    await state.set_state(Garage.model)
+    await message.answer("Модель? Например: <code>X3 G01</code>")
+
+
+@dp.message(Garage.model)
+async def garage_model(message: Message, state: FSMContext):
+    value = (message.text or "").strip()
+    if not value:
+        await message.answer("Введите модель автомобиля.")
+        return
+    await state.update_data(model=value)
+    await state.set_state(Garage.year)
+    await message.answer("Год выпуска? Например: <code>2020</code>")
+
+
+@dp.message(Garage.year)
+async def garage_year(message: Message, state: FSMContext):
+    try:
+        year = int((message.text or "").strip())
+    except ValueError:
+        await message.answer("Введите год числом.")
+        return
+
+    if not 1950 <= year <= 2030:
+        await message.answer("Проверьте год выпуска.")
+        return
+
+    await state.update_data(year=year)
+    await state.set_state(Garage.vin)
+    await message.answer(
+        "VIN из 17 символов. Если пока не хотите указывать VIN — отправьте <code>-</code>."
+    )
+
+
+@dp.message(Garage.vin)
+async def garage_vin(message: Message, state: FSMContext):
+    raw = (message.text or "").strip().upper()
+    vin = None if raw == "-" else raw
+
+    if vin and len(vin) != 17:
+        await message.answer("VIN должен содержать 17 символов. Либо отправьте <code>-</code>.")
+        return
+
+    data = await state.get_data()
+    vehicle = await save_vehicle(
+        message.from_user.id,
+        data["brand"],
+        data["model"],
+        data["year"],
+        vin,
+    )
+    await state.clear()
+
+    await message.answer(
+        "Автомобиль сохранён.\n\n"
+        f"{vehicle_summary(vehicle)}\n\n"
+        "Теперь можно открыть каталог или сразу написать нужную деталь.",
+        reply_markup=main_menu(True),
+    )
+
+
+@dp.message(Command("catalog"))
+@dp.message(F.text == BTN_CATALOG)
+async def catalog_command(message: Message, state: FSMContext):
+    if (message.text or "").startswith("/catalog "):
+        await state.clear()
+        raw = (message.text or "").split(maxsplit=1)[1]
+        parsed = parse_vehicle_text(raw)
+        if parsed is None:
+            await message.answer(
+                "Укажите марку и модель, например: <code>/catalog BMW X3 G01</code>"
+            )
+            return
+        brand, model = parsed
+        await show_catalog_root(message, state, brand, model, None, None, "temporary")
+        return
+
+    await open_catalog_for_saved_vehicle(message, state)
+
+
+@dp.message(F.text == BTN_MODEL_CATALOG)
+async def catalog_by_model_button(message: Message, state: FSMContext):
+    await state.clear()
+    await state.set_state(CatalogFlow.vehicle)
+    await message.answer(
+        "Напишите марку и модель.\nНапример: <code>BMW X3 G01</code>",
+        reply_markup=cancel_menu(),
+    )
+
+
+@dp.message(CatalogFlow.vehicle)
+async def catalog_vehicle_input(message: Message, state: FSMContext):
+    parsed = parse_vehicle_text(message.text or "")
+    if parsed is None:
+        await message.answer(
+            "Не удалось распознать автомобиль. Попробуйте в формате "
+            "<code>BMW X3 G01</code> или <code>Toyota Camry XV70</code>."
+        )
+        return
+
+    brand, model = parsed
+    await state.clear()
+    await show_catalog_root(message, state, brand, model, None, None, "temporary")
+
+
+@dp.message(F.text == BTN_SERVICE)
+async def service_shortcut(message: Message, state: FSMContext):
+    vehicle = await get_vehicle(message.from_user.id)
+    if vehicle is None:
+        await message.answer("Сначала добавьте автомобиль.", reply_markup=main_menu(False))
+        return
+
+    await set_catalog_context(
+        state,
+        vehicle.brand,
+        vehicle.model,
+        vehicle.year,
+        vehicle.vin,
+        "garage",
+    )
+    node = get_node("service")
+    await message.answer(
+        f"{vehicle_summary(vehicle)}\n\n"
+        f"<b>{escape(node.title)}</b>\nВыберите позицию:",
+        reply_markup=catalog_keyboard("service"),
+    )
+
+
+@dp.message(Command("search"))
+@dp.message(F.text == BTN_SEARCH)
+async def search_button(message: Message, state: FSMContext):
+    await start_search(message, state)
+
+
+@dp.message(F.text == BTN_ARTICLE)
+async def article_button(message: Message, state: FSMContext):
+    await start_search(message, state, article_only=True)
+
+
+@dp.message(SearchFlow.query)
+async def search_query(message: Message, state: FSMContext):
+    query = (message.text or "").strip()
+    if not query:
+        await message.answer("Введите название детали или артикул.")
+        return
+
+    vehicle = await get_vehicle(message.from_user.id)
+    await state.clear()
+    if vehicle is None:
+        await message.answer("Автомобиль не найден.", reply_markup=main_menu(False))
+        return
+
+    await send_search_results(message, vehicle, query)
+    await message.answer("Что дальше?", reply_markup=main_menu(True))
+
+
+@dp.callback_query(F.data == "action:search")
+async def callback_new_search(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    if callback.message:
+        await start_search(callback.message, state)
 
 
 @dp.callback_query(F.data.startswith("cat:"))
@@ -287,67 +442,55 @@ async def catalog_callback(callback: CallbackQuery, state: FSMContext):
 
     vehicle, source = await get_catalog_vehicle(state, callback.from_user.id)
     if vehicle is None:
-        await callback.message.answer("Сначала выберите автомобиль через /catalog или /garage.")
+        await callback.message.answer("Сначала выберите автомобиль.", reply_markup=main_menu(False))
         return
 
-    year = vehicle.year or None
-    vehicle_title = catalog_context_title(vehicle.brand, vehicle.model, year)
-
     if node.children:
+        year_text = f" · {vehicle.year}" if vehicle.year else ""
         await callback.message.edit_text(
-            f"<b>{vehicle_title}</b>\n"
-            f"Раздел: <b>{escape(node.title)}</b>\n\n"
+            f"🚗 <b>{escape(vehicle.brand)} {escape(vehicle.model)}</b>{year_text}\n\n"
+            f"<b>{escape(node.title)}</b>\n"
             "Выберите подгруппу:",
             reply_markup=catalog_keyboard(node.id),
         )
         return
 
     if not node.query:
-        await callback.message.edit_text(
-            "Для этого раздела пока нет поискового запроса.",
-            reply_markup=leaf_keyboard(node.parent),
-        )
+        await callback.message.answer("Для этого раздела пока нет поискового запроса.")
         return
-
-    offers = []
-    for provider in providers:
-        offers.extend(await provider.search(vehicle, node.query))
-    ranked = rank_offers(offers)
-
-    if not ranked:
-        body = "Предложений пока нет."
-    else:
-        body = (
-            offer_text("Лучший баланс", ranked["best"]) + "\n\n"
-            + offer_text("Самый дешёвый", ranked["cheapest"]) + "\n\n"
-            + offer_text("Самый быстрый", ranked["fastest"])
-        )
 
     compatibility_note = (
         "Общий каталог модели: точная совместимость пока не подтверждена."
         if source == "temporary"
-        else "Данные демонстрационные; проверку применимости по VIN подключим следующим этапом."
+        else "Применимость пока демонстрационная; в следующем этапе подключим проверку по VIN."
     )
+
+    ranked = await search_offers(vehicle, node.query)
+    if not ranked:
+        await callback.message.edit_text(
+            "Предложений пока нет.",
+            reply_markup=results_keyboard(node.parent),
+        )
+        return
+
+    body = (
+        offer_text("⭐ Лучший баланс", ranked["best"]) + "\n\n"
+        + offer_text("💰 Самый дешёвый", ranked["cheapest"]) + "\n\n"
+        + offer_text("🚚 Самый быстрый", ranked["fastest"])
+    )
+    year_text = f" · {vehicle.year}" if vehicle.year else ""
 
     await callback.message.edit_text(
-        f"<b>{vehicle_title}</b>\n"
+        f"🚗 <b>{escape(vehicle.brand)} {escape(vehicle.model)}</b>{year_text}\n"
         f"Категория: <b>{escape(node.title)}</b>\n\n"
         f"{body}\n\n"
-        f"<i>{compatibility_note}</i>",
-        reply_markup=leaf_keyboard(node.parent),
+        f"<i>{escape(compatibility_note)}</i>",
+        reply_markup=results_keyboard(node.parent),
     )
-
-
-def offer_text(label, offer):
-    return (
-        f"<b>{label}</b>\n"
-        f"{escape(offer.brand)} · <code>{escape(offer.article)}</code>\n"
-        f"{offer.price:,.0f} ₽ · {offer.delivery_days} дн. · {escape(offer.provider)}"
-    ).replace(",", " ")
 
 
 @dp.message(F.text)
-async def search(message: Message, state: FSMContext):
+async def free_text(message: Message, state: FSMContext):
     text = (message.text or "").strip()
     if not text or text.startswith("/"):
         return
@@ -362,27 +505,13 @@ async def search(message: Message, state: FSMContext):
     vehicle = await get_vehicle(message.from_user.id)
     if vehicle is None:
         await message.answer(
-            "Не вижу сохранённого автомобиля.\n"
-            "Добавь его через /garage или просто напиши марку и модель, например:\n"
-            "<code>BMW X3 G01</code>"
+            "Сначала укажите автомобиль или откройте каталог по модели.",
+            reply_markup=main_menu(False),
         )
         return
 
-    offers = []
-    for provider in providers:
-        offers.extend(await provider.search(vehicle, text))
-    ranked = rank_offers(offers)
-    if not ranked:
-        await message.answer("Пока предложений нет.")
-        return
-
-    await message.answer(
-        f"Запрос: <b>{escape(text)}</b>\n\n"
-        + offer_text("Лучший баланс", ranked["best"]) + "\n\n"
-        + offer_text("Самый дешёвый", ranked["cheapest"]) + "\n\n"
-        + offer_text("Самый быстрый", ranked["fastest"]) + "\n\n"
-        + "<i>Это демонстрационные данные.</i>"
-    )
+    await send_search_results(message, vehicle, text)
+    await message.answer("Что дальше?", reply_markup=main_menu(True))
 
 
 async def main():
@@ -390,6 +519,15 @@ async def main():
     bot = Bot(
         settings().bot_token,
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
+    )
+    await bot.set_my_commands(
+        [
+            BotCommand(command="start", description="Главное меню"),
+            BotCommand(command="catalog", description="Каталог запчастей"),
+            BotCommand(command="search", description="Найти запчасть"),
+            BotCommand(command="garage", description="Мой автомобиль"),
+            BotCommand(command="garage_add", description="Добавить или заменить автомобиль"),
+        ]
     )
     await dp.start_polling(bot)
 
