@@ -1,4 +1,5 @@
-from datetime import datetime
+from datetime import datetime, timezone
+from decimal import Decimal
 
 from sqlalchemy import BigInteger, Boolean, DateTime, Integer, Numeric, String, func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -54,8 +55,8 @@ class PriceAlertRow(Base):
     brand: Mapped[str] = mapped_column(String(120))
     article: Mapped[str] = mapped_column(String(120), index=True)
     title: Mapped[str] = mapped_column(String(250))
-    target_price: Mapped[object] = mapped_column(Numeric(12, 2))
-    last_price: Mapped[object | None] = mapped_column(Numeric(12, 2), nullable=True)
+    target_price: Mapped[Decimal] = mapped_column(Numeric(12, 2))
+    last_price: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     triggered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -469,8 +470,6 @@ async def create_price_alert(
     target_price,
     last_price=None,
 ) -> PriceAlert:
-    from decimal import Decimal
-
     target = Decimal(str(target_price))
     last = Decimal(str(last_price)) if last_price is not None else None
 
@@ -521,8 +520,6 @@ async def list_price_alerts(
     *,
     active_only: bool = True,
 ) -> list[PriceAlert]:
-    from decimal import Decimal
-
     async with Session() as session:
         stmt = select(PriceAlertRow)
         if user_id is not None:
@@ -554,8 +551,6 @@ async def update_price_alert(
     last_price=None,
     triggered: bool = False,
 ) -> None:
-    from decimal import Decimal
-
     async with Session() as session:
         row = await session.get(PriceAlertRow, alert_id)
         if row is None:
@@ -565,7 +560,7 @@ async def update_price_alert(
             row.last_price = Decimal(str(last_price))
         if triggered:
             row.is_active = False
-            row.triggered_at = datetime.utcnow()
+            row.triggered_at = datetime.now(timezone.utc)
         await session.commit()
 
 
