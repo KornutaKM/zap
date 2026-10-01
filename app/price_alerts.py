@@ -1,7 +1,6 @@
 from dataclasses import dataclass
 from decimal import Decimal
 
-from app.db import get_vehicle_by_id, list_price_alerts, update_price_alert
 from app.domain import PriceAlert, Vehicle
 from app.search_service import PartsSearchService
 
@@ -37,6 +36,8 @@ async def check_price_alert(
     alert: PriceAlert,
     search_service: PartsSearchService,
 ) -> PriceAlertHit | None:
+    from app.db import get_vehicle_by_id, update_price_alert
+
     vehicle = None
     if alert.vehicle_id is not None:
         vehicle = await get_vehicle_by_id(
@@ -66,6 +67,8 @@ async def check_price_alert(
 async def check_all_price_alerts(
     search_service: PartsSearchService,
 ) -> list[PriceAlertHit]:
+    from app.db import list_price_alerts
+
     alerts = await list_price_alerts(active_only=True)
     hits: list[PriceAlertHit] = []
     for alert in alerts:
