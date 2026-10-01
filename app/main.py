@@ -14,12 +14,13 @@ from aiogram.types import BotCommand, CallbackQuery, Message
 from app.bootstrap import build_app_services
 from app.catalog import get_node
 from app.config import settings
-from app.db import add_favorite, create_price_alert, delete_price_alert, delete_vehicle, get_search_history_item, get_vehicle, init_db, list_favorites, list_price_alerts, list_recent_searches, list_vehicles, record_search, remove_favorite, save_vehicle, set_active_vehicle, set_vehicle_modification, update_vehicle_from_resolution
+from app.db import add_favorite, add_shopping_item, change_shopping_quantity, clear_shopping_list, create_price_alert, delete_price_alert, delete_vehicle, get_search_history_item, get_vehicle, get_vehicle_by_id, init_db, list_favorites, list_price_alerts, list_recent_searches, list_shopping_items, list_vehicles, record_search, remove_favorite, remove_shopping_item, save_vehicle, set_active_vehicle, set_vehicle_modification, update_vehicle_from_resolution
 from app.domain import Vehicle
 from app.alert_worker import price_alert_loop
 from app.health import readiness
 from app.middleware import RateLimitMiddleware
 from app.observability import configure_logging, log_event
+from app.procurement import PurchaseRequest, deserialize_purchase_plan, optimize_purchase, serialize_purchase_plan
 from app.query_parser import parse_search_query
 from app.rate_limit import build_rate_limiter
 from app.runtime import run_bot
@@ -35,6 +36,7 @@ from app.ui import (
     BTN_MODEL_CATALOG,
     BTN_SEARCH,
     BTN_SERVICE,
+    BTN_SHOPPING,
     built_kit_keyboard,
     built_kit_text,
     cancel_menu,
@@ -52,7 +54,12 @@ from app.ui import (
     parts_results_keyboard,
     price_alert_target_keyboard,
     price_alerts_keyboard,
+    purchase_plan_keyboard,
+    purchase_plan_text,
+    purchase_plans_keyboard,
     service_kits_keyboard,
+    shopping_list_keyboard,
+    shopping_list_text,
     vehicle_modification_text,
     vehicle_summary,
 )
@@ -967,6 +974,245 @@ async def favorite_delete_callback(callback: CallbackQuery):
     )
 
 
+def _article_key(value: str) -> str:
+    return "".join(ch for ch in value.casefold() if ch.isalnum())
+
+
+async def _refresh_shopping_candidate(item):
+    vehicle = None
+    if item.vehicle_id is not None:
+        vehicle = await get_vehicle_by_id(item.telegram_user_id, item.vehicle_id)
+    if vehicle is None:
+        vehicle = await get_vehicle(item.telegram_user_id)
+
+    candidates = await search_service.parts(vehicle, item.article)
+    requested_article = _article_key(item.article)
+    requested_brand = item.brand.casefold()
+
+    exact = next(
+        (
+            candidate
+            for candidate in candidates
+            if _article_key(candidate.article) == requested_article
+            and candidate.brand.casefold() == requested_brand
+        ),
+        None,
+    )
+    if exact is not None:
+        return exact
+
+    return next(
+        (
+            candidate
+            for candidate in candidates
+            if _article_key(candidate.article) == requested_article
+        ),
+        None,
+    )
+
+
+async def show_shopping_list(message: Message, user_id: int) -> None:
+    items = await list_shopping_items(user_id)
+    await message.answer(
+        shopping_list_text(items),
+        reply_markup=shopping_list_keyboard(items),
+    )
+
+
+@dp.message(F.text == BTN_SHOPPING)
+async def shopping_list_button(message: Message):
+    await show_shopping_list(message, message.from_user.id)
+
+
+@dp.callback_query(F.data.startswith("shop:add:"))
+async def shopping_add_callback(callback: CallbackQuery, state: FSMContext):
+    if callback.message is None:
+        return
+
+    try:
+        index = int((callback.data or "").rsplit(":", 1)[1])
+    except ValueError:
+        await callback.answer("Некорректная позиция", show_alert=True)
+        return
+
+    data = await state.get_data()
+    raw_items = data.get("last_parts") or []
+    if index < 0 or index >= len(raw_items):
+        await callback.answer("Эта выдача устарела", show_alert=True)
+        return
+
+    candidate = deserialize_candidate(raw_items[index])
+    vehicle = vehicle_from_state(data.get("last_vehicle"))
+    if vehicle is None:
+        vehicle, _ = await get_catalog_vehicle(state, callback.from_user.id)
+
+    item = await add_shopping_item(
+        callback.from_user.id,
+        vehicle_id=vehicle.id if vehicle else None,
+        brand=candidate.brand,
+        article=candidate.article,
+        title=candidate.title,
+        quantity=1,
+    )
+    await callback.answer(
+        f"В закупке: {item.brand} {item.article} × {item.quantity}",
+        show_alert=False,
+    )
+
+
+@dp.callback_query(F.data.startswith("shop:qty:"))
+async def shopping_quantity_callback(callback: CallbackQuery):
+    await callback.answer()
+    if callback.message is None:
+        return
+
+    parts = (callback.data or "").split(":")
+    if len(parts) != 4:
+        return
+    try:
+        item_id = int(parts[2])
+        delta = int(parts[3])
+    except ValueError:
+        return
+
+    await change_shopping_quantity(callback.from_user.id, item_id, delta)
+    items = await list_shopping_items(callback.from_user.id)
+    await callback.message.edit_text(
+        shopping_list_text(items),
+        reply_markup=shopping_list_keyboard(items),
+    )
+
+
+@dp.callback_query(F.data.startswith("shop:del:"))
+async def shopping_delete_callback(callback: CallbackQuery):
+    await callback.answer()
+    if callback.message is None:
+        return
+
+    try:
+        item_id = int((callback.data or "").rsplit(":", 1)[1])
+    except ValueError:
+        return
+
+    await remove_shopping_item(callback.from_user.id, item_id)
+    items = await list_shopping_items(callback.from_user.id)
+    await callback.message.edit_text(
+        shopping_list_text(items),
+        reply_markup=shopping_list_keyboard(items),
+    )
+
+
+@dp.callback_query(F.data == "shop:clear")
+async def shopping_clear_callback(callback: CallbackQuery):
+    await callback.answer()
+    if callback.message is None:
+        return
+    await clear_shopping_list(callback.from_user.id)
+    await callback.message.edit_text(
+        shopping_list_text([]),
+        reply_markup=shopping_list_keyboard([]),
+    )
+
+
+@dp.callback_query(F.data.in_({"shop:back", "shop:item"}))
+async def shopping_back_callback(callback: CallbackQuery):
+    await callback.answer()
+    if callback.message is None:
+        return
+    items = await list_shopping_items(callback.from_user.id)
+    await callback.message.edit_text(
+        shopping_list_text(items),
+        reply_markup=shopping_list_keyboard(items),
+    )
+
+
+@dp.callback_query(F.data == "shop:optimize")
+async def shopping_optimize_callback(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    if callback.message is None:
+        return
+
+    items = await list_shopping_items(callback.from_user.id)
+    if not items:
+        await callback.message.edit_text("Список закупки пуст.")
+        return
+
+    refreshed = await asyncio.gather(
+        *(_refresh_shopping_candidate(item) for item in items)
+    )
+
+    requests = [
+        PurchaseRequest(
+            brand=item.brand,
+            article=item.article,
+            title=item.title,
+            quantity=item.quantity,
+        )
+        for item in items
+    ]
+    candidate_map = {}
+    missing = []
+    for item, candidate in zip(items, refreshed, strict=True):
+        if candidate is None:
+            missing.append(f"{item.brand} {item.article}")
+            continue
+        candidate_map[(item.brand.casefold(), item.article.casefold())] = candidate
+
+    plans = optimize_purchase(requests, candidate_map)
+    if not plans:
+        await callback.message.edit_text(
+            "Не удалось получить актуальные предложения для списка. "
+            "Попробуйте позже."
+        )
+        return
+
+    await state.update_data(
+        last_purchase_plans=[serialize_purchase_plan(plan) for plan in plans[:5]]
+    )
+
+    lines = ["<b>Варианты закупки</b>", ""]
+    for index, plan in enumerate(plans[:5], start=1):
+        total = f"{plan.grand_total:,.0f}".replace(",", " ")
+        lines.append(
+            f"{index}. {escape(plan.title)} — <b>{total} ₽</b> · "
+            f"{plan.provider_count} магаз."
+        )
+    if missing:
+        lines.extend([
+            "",
+            "Не удалось обновить: " + ", ".join(escape(item) for item in missing),
+        ])
+
+    await callback.message.edit_text(
+        "\n".join(lines),
+        reply_markup=purchase_plans_keyboard(plans[:5]),
+    )
+
+
+@dp.callback_query(F.data.startswith("shop:plan:"))
+async def shopping_plan_callback(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    if callback.message is None:
+        return
+
+    try:
+        index = int((callback.data or "").rsplit(":", 1)[1])
+    except ValueError:
+        return
+
+    data = await state.get_data()
+    raw_plans = data.get("last_purchase_plans") or []
+    if index < 0 or index >= len(raw_plans):
+        await callback.message.answer("Расчёт устарел. Выполните его ещё раз.")
+        return
+
+    plan = deserialize_purchase_plan(raw_plans[index])
+    await callback.message.edit_text(
+        purchase_plan_text(plan, index + 1),
+        reply_markup=purchase_plan_keyboard(plan),
+    )
+
+
 @dp.message(F.text == BTN_ALERTS)
 async def price_alerts_button(message: Message):
     alerts = await list_price_alerts(message.from_user.id)
@@ -1267,7 +1513,7 @@ async def part_detail_callback(callback: CallbackQuery, state: FSMContext):
     await callback.message.edit_text(
         f"{candidate_detail_text(candidate)}\n\n"
         f"<i>{escape(note)}</i>",
-        reply_markup=part_detail_keyboard(index, parent_id),
+        reply_markup=part_detail_keyboard(index, parent_id, candidate),
     )
 
 
