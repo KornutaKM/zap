@@ -162,12 +162,21 @@ def offer_text(label: str, offer: Offer) -> str:
     )
 
 
+def fitment_badge(status: str) -> str:
+    return {
+        "confirmed": "✅ подтверждено",
+        "probable": "🟡 вероятно",
+        "unverified": "⚪ не проверено",
+    }.get(status, "⚪ не проверено")
+
+
 def candidate_text(index: int, candidate: PartCandidate) -> str:
     price = f"{candidate.min_price:,.0f}".replace(",", " ")
     return (
         f"<b>{index}. {escape(candidate.brand)}</b> · "
         f"<code>{escape(candidate.article)}</code>\n"
         f"{escape(candidate.title)}\n"
+        f"{fitment_badge(candidate.fitment_status)}\n"
         f"от {price} ₽ · от {candidate.min_delivery_days} дн. · "
         f"{len(candidate.offers)} предлож."
     )
@@ -178,11 +187,24 @@ def candidate_detail_text(candidate: PartCandidate) -> str:
     lines = [
         f"<b>{escape(candidate.brand)} · <code>{escape(candidate.article)}</code></b>",
         escape(candidate.title),
+        f"Совместимость: <b>{fitment_badge(candidate.fitment_status)}</b>",
         f"Цена: от <b>{header_price} ₽</b>",
         f"Предложений: <b>{len(candidate.offers)}</b>",
+    ]
+
+    if candidate.oe_numbers:
+        lines.append(
+            "OE: " + ", ".join(
+                f"<code>{escape(number)}</code>" for number in candidate.oe_numbers
+            )
+        )
+    if candidate.fitment_reason:
+        lines.append(escape(candidate.fitment_reason))
+
+    lines.extend([
         "",
         "<b>Магазины</b>",
-    ]
+    ])
 
     for offer in candidate.offers[:8]:
         price = f"{offer.price:,.0f}".replace(",", " ")
