@@ -206,3 +206,74 @@ def optimize_purchase(
             plan.max_delivery_days,
         ),
     )
+
+
+
+def serialize_purchase_plan(plan: PurchasePlan) -> dict:
+    return {
+        "mode": plan.mode,
+        "title": plan.title,
+        "item_total": str(plan.item_total),
+        "shipping_total": str(plan.shipping_total),
+        "grand_total": str(plan.grand_total),
+        "provider_count": plan.provider_count,
+        "max_delivery_days": plan.max_delivery_days,
+        "choices": [
+            {
+                "request": {
+                    "brand": choice.request.brand,
+                    "article": choice.request.article,
+                    "title": choice.request.title,
+                    "quantity": choice.request.quantity,
+                },
+                "offer": {
+                    "provider": choice.offer.provider,
+                    "brand": choice.offer.brand,
+                    "article": choice.offer.article,
+                    "title": choice.offer.title,
+                    "price": str(choice.offer.price),
+                    "delivery_days": choice.offer.delivery_days,
+                    "quality": choice.offer.quality,
+                    "url": choice.offer.url,
+                    "in_stock": choice.offer.in_stock,
+                },
+            }
+            for choice in plan.choices
+        ],
+    }
+
+
+def deserialize_purchase_plan(data: dict) -> PurchasePlan:
+    choices = []
+    for item in data["choices"]:
+        request_data = item["request"]
+        offer_data = item["offer"]
+        request = PurchaseRequest(
+            brand=request_data["brand"],
+            article=request_data["article"],
+            title=request_data["title"],
+            quantity=int(request_data["quantity"]),
+        )
+        offer = Offer(
+            provider=offer_data["provider"],
+            brand=offer_data["brand"],
+            article=offer_data["article"],
+            title=offer_data["title"],
+            price=Decimal(offer_data["price"]),
+            delivery_days=int(offer_data["delivery_days"]),
+            quality=float(offer_data["quality"]),
+            url=offer_data.get("url"),
+            in_stock=bool(offer_data.get("in_stock", True)),
+        )
+        choices.append(PurchaseChoice(request=request, offer=offer))
+
+    return PurchasePlan(
+        mode=data["mode"],
+        title=data["title"],
+        choices=tuple(choices),
+        item_total=Decimal(data["item_total"]),
+        shipping_total=Decimal(data["shipping_total"]),
+        grand_total=Decimal(data["grand_total"]),
+        provider_count=int(data["provider_count"]),
+        max_delivery_days=int(data["max_delivery_days"]),
+    )
