@@ -5,7 +5,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    bot_token: str
+    bot_token: str = ""
     database_url: str = "sqlite+aiosqlite:///autoparts.db"
     log_level: str = "INFO"
     search_cache_backend: str = "memory"
