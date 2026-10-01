@@ -62,6 +62,10 @@ async def main():
     assert len(points) == 2
     assert points[0].price == Decimal("1100")
 
+    # Repeating the same latest commercial state must not create another point.
+    assert await record_price_observations([offers[-1]]) == 0
+    assert len(await list_price_history("ATE", "123")) == 2
+
     assert await delete_purchase_quote(42, quote.id)
     assert await list_purchase_quotes(42) == []
 
