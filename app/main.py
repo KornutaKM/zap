@@ -166,16 +166,17 @@ async def open_catalog_for_saved_vehicle(message: Message, state: FSMContext) ->
     )
 
 
-async def search_offers(vehicle: Vehicle, query: str):
+async def search_offers(vehicle: Vehicle | None, query: str):
+    provider_vehicle = vehicle or Vehicle("Автомобиль", "не выбран", 0, None)
     offers = []
     for provider in providers:
-        offers.extend(await provider.search(vehicle, query))
+        offers.extend(await provider.search(provider_vehicle, query))
     return rank_offers(offers)
 
 
 async def send_search_results(
     message: Message,
-    vehicle: Vehicle,
+    vehicle: Vehicle | None,
     query: str,
     parent_id: str | None = None,
     compatibility_note: str | None = None,
@@ -184,7 +185,7 @@ async def send_search_results(
     if not ranked:
         await message.answer(
             "По этому запросу предложений пока нет.",
-            reply_markup=main_menu(True),
+            reply_markup=main_menu(vehicle is not None),
         )
         return
 
@@ -195,8 +196,9 @@ async def send_search_results(
     )
     note = compatibility_note or "Данные и цены пока демонстрационные."
 
+    vehicle_block = f"{vehicle_summary(vehicle)}\n\n" if vehicle else ""
     await message.answer(
-        f"{vehicle_summary(vehicle)}\n\n"
+        f"{vehicle_block}"
         f"Запрос: <b>{escape(query)}</b>\n\n"
         f"{body}\n\n"
         f"<i>{escape(note)}</i>",
@@ -212,12 +214,15 @@ async def start_search(
 ) -> None:
     resolved_user_id = user_id if user_id is not None else message.from_user.id
     vehicle, _ = await get_catalog_vehicle(state, resolved_user_id)
-    if vehicle is None:
+    if vehicle is None and not article_only:
         await message.answer(
             "Сначала выберите автомобиль. Можно добавить его в гараж или открыть каталог по модели.",
             reply_markup=main_menu(False),
         )
         return
+
+    if vehicle is None and article_only:
+        await state.update_data(search_without_vehicle=True)
 
     await state.set_state(SearchFlow.query)
     prompt = (
@@ -438,18 +443,30 @@ async def search_query(message: Message, state: FSMContext):
         await message.answer("Введите название детали или артикул.")
         return
 
+    search_data = await state.get_data()
     vehicle, source = await get_catalog_vehicle(state, message.from_user.id)
+    without_vehicle = bool(search_data.get("search_without_vehicle"))
     await state.clear()
-    if vehicle is None:
+
+    if vehicle is None and not without_vehicle:
         await message.answer("Автомобиль не найден.", reply_markup=main_menu(False))
         return
 
     note = (
-        "Общий каталог модели: точная совместимость пока не подтверждена."
-        if source == "temporary"
-        else None
+        "Совместимость с автомобилем не проверялась."
+        if without_vehicle
+        else (
+            "Общий каталог модели: точная совместимость пока не подтверждена."
+            if source == "temporary"
+            else None
+        )
     )
-    await send_search_results(message, vehicle, query, compatibility_note=note)
+    await send_search_results(
+        message,
+        None if without_vehicle else vehicle,
+        query,
+        compatibility_note=note,
+    )
     saved_vehicle = await get_vehicle(message.from_user.id)
     await message.answer("Что дальше?", reply_markup=main_menu(saved_vehicle is not None))
 
@@ -458,7 +475,13 @@ async def search_query(message: Message, state: FSMContext):
 async def callback_new_search(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
     if callback.message:
-        await start_search(callback.message, state, user_id=callback.from_user.id)
+        vehicle, _ = await get_catalog_vehicle(state, callback.from_user.id)
+        await start_search(
+            callback.message,
+            state,
+            article_only=vehicle is None,
+            user_id=callback.from_user.id,
+        )
 
 
 @dp.callback_query(F.data.startswith("vehgen:"))
