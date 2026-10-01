@@ -1,3 +1,4 @@
+import asyncio
 from dataclasses import dataclass
 from decimal import Decimal
 
@@ -73,9 +74,12 @@ async def build_service_kit(
     vehicle: Vehicle,
     kit: ServiceKit,
 ) -> BuiltKit:
-    items: list[KitItem] = []
-    for query in kit.queries:
-        candidates = await service.parts(vehicle, query)
-        if candidates:
-            items.append(KitItem(query=query, candidate=candidates[0]))
+    batches = await asyncio.gather(
+        *(service.parts(vehicle, query) for query in kit.queries)
+    )
+    items = [
+        KitItem(query=query, candidate=candidates[0])
+        for query, candidates in zip(kit.queries, batches, strict=True)
+        if candidates
+    ]
     return BuiltKit(kit=kit, items=tuple(items))
