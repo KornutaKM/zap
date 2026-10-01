@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Protocol
-from urllib.parse import urljoin, urlparse
+from urllib.parse import quote, urljoin, urlparse
 
 import aiohttp
 
@@ -78,6 +78,7 @@ class HttpCheckoutConfig:
     api_key_header: str = "Authorization"
     auth_scheme: str = "Bearer"
     allow_http: bool = False
+    timeout_seconds: float = 10.0
 
     def validate(self) -> None:
         parsed = urlparse(self.base_url)
@@ -129,7 +130,8 @@ class GenericHttpCheckoutAdapter:
         }
 
         try:
-            async with aiohttp.ClientSession(headers=self._headers()) as session:
+            timeout = aiohttp.ClientTimeout(total=max(1.0, self.config.timeout_seconds))
+            async with aiohttp.ClientSession(headers=self._headers(), timeout=timeout) as session:
                 async with session.post(url, json=payload) as response:
                     response.raise_for_status()
                     data = await response.json(content_type=None)
@@ -173,14 +175,15 @@ class GenericHttpCheckoutAdapter:
 
     async def get_status(self, external_order_id: str) -> CheckoutResult:
         path = self.config.status_path.format(
-            external_order_id=external_order_id
+            external_order_id=quote(external_order_id, safe="")
         )
         url = urljoin(
             self.config.base_url.rstrip("/") + "/",
             path.lstrip("/"),
         )
         try:
-            async with aiohttp.ClientSession(headers=self._headers()) as session:
+            timeout = aiohttp.ClientTimeout(total=max(1.0, self.config.timeout_seconds))
+            async with aiohttp.ClientSession(headers=self._headers(), timeout=timeout) as session:
                 async with session.get(url) as response:
                     response.raise_for_status()
                     data = await response.json(content_type=None)
