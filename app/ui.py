@@ -856,6 +856,14 @@ def order_detail_keyboard(
             )
         ])
 
+    if order.status in {"draft", "ready", "price_changed", "needs_attention"}:
+        rows.append([
+            InlineKeyboardButton(
+                text="🗑 Отменить заказ",
+                callback_data=f"order:cancel:{order.id}",
+            )
+        ])
+
     if order.status in {
         "checkout_pending",
         "awaiting_manual_checkout",
