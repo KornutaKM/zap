@@ -33,7 +33,7 @@ Zap — обычный Telegram-бот без Mini App. Пользователь
 GDB1956
 ```
 
-Слова вроде «подешевле» и «срочно» автоматически переключают сортировку.
+Слова вроде «подешевле» и «срочно» автоматически переключают сортировку. Выдача хранит до 20 вариантов и листается по 5 деталей inline-кнопками; сортировка сохраняется при переходе между страницами.
 
 ## Автомобиль и модификация
 
@@ -64,7 +64,44 @@ VIN (опционально)
 modification_key
 ```
 
-В demo-справочнике есть несколько модификаций BMW X3 G01, Toyota Camry XV70 и Volkswagen Tiguan II. Это именно демонстрационный resolver, а не VIN decoder.
+В demo-справочнике есть несколько модификаций BMW X3 G01, Toyota Camry XV70 и Volkswagen Tiguan II.
+
+### Внешний VIN / vehicle API
+
+Добавлен отдельный `VehicleResolver`. Если при добавлении автомобиля указан VIN и внешний resolver включён, бот сначала сохраняет пользовательские данные, затем пытается уточнить автомобиль через HTTPS API. При недоступном API гараж всё равно остаётся рабочим; обновление применяется только для валидного `resolved`-ответа.
+
+Пример запроса:
+
+```text
+GET /vehicle/vin?vin=WBA...
+```
+
+Поддерживаемый ответ:
+
+```json
+{
+  "status": "resolved",
+  "brand": "BMW",
+  "model": "X3 G01",
+  "year": 2020,
+  "generation_code": "G01",
+  "engine": "B47D20",
+  "fuel": "diesel",
+  "drive": "xDrive",
+  "power_hp": 190,
+  "modification_key": "bmw_x3_g01_20d_xdrive",
+  "source": "partner-catalog"
+}
+```
+
+Настройка:
+
+```env
+VEHICLE_API_ENABLED=true
+VEHICLE_API_BASE_URL=https://vehicle.example.com
+VEHICLE_API_VIN_PATH=/vehicle/vin
+VEHICLE_API_KEY=...
+```
 
 Старая SQLite-схема мигрируется автоматически: новые поля добавляются без удаления существующих автомобилей. В CI есть отдельный regression-test, который создаёт старую таблицу и проверяет upgrade.
 
@@ -138,9 +175,20 @@ HTTP по умолчанию запрещён; adapter требует HTTPS.
 - ставит timeout на каждый источник;
 - использует TTL-кэш;
 - переживает падение одного provider;
+- ведёт health-метрики по каждому provider;
+- открывает circuit breaker после серии ошибок и временно перестаёт дергать нестабильный источник;
 - группирует предложения по `brand + article`;
 - ранжирует детали отдельно от коммерческих предложений;
 - затем накладывает fitment status.
+
+Команда `/status` показывает безопасный runtime-статус источников: `healthy / degraded / open`, число успешных/ошибочных вызовов, latency и оставшийся cooldown. URL и ключи не выводятся.
+
+Circuit breaker настраивается:
+
+```env
+PROVIDER_CIRCUIT_FAILURE_THRESHOLD=3
+PROVIDER_CIRCUIT_COOLDOWN_SECONDS=60
+```
 
 Demo-market имитирует Exist / Autodoc / Emex, но его можно выключить:
 
@@ -215,7 +263,7 @@ DEMO_PROVIDER_ENABLED=false
 
 ## Price alerts
 
-Кнопка «🔔 Следить» создаёт порог по умолчанию на 5% ниже текущей цены.
+Кнопка «🔔 Следить» сначала предлагает порог: текущая цена, −5%, −10% или −20%. После выбора создаётся отдельный alert для конкретного артикула и автомобиля.
 
 Worker:
 
@@ -277,6 +325,25 @@ WEBHOOK_SECRET_TOKEN=change-me
 
 Webhook mode использует `SimpleRequestHandler`, secret token и endpoint `/healthz`. Сервер начинает слушать порт до вызова Telegram `setWebhook`.
 
+## Observability
+
+Приложение пишет структурированные JSON-логи в stdout. Логируются:
+
+- startup и выбранный runtime;
+- открытие/recovery circuit breaker;
+- provider failures без пользовательского запроса;
+- запуск и ошибки price-alert worker;
+- старт polling/webhook runtime.
+
+Поля с `token`, `secret`, `authorization`, `api_key` и VIN автоматически редактируются как `***`.
+
+Уровень:
+
+```env
+LOG_LEVEL=INFO
+```
+
+
 ## Запуск
 
 Python 3.12+:
@@ -313,7 +380,9 @@ app/
 ├── domain.py             domain models
 ├── vehicle_parser.py     brand/model parsing
 ├── vehicle_catalog.py    generation resolver
-├── vehicle_resolver.py   modification resolver
+├── vehicle_resolver.py   demo modification resolver
+├── vehicle_resolution.py vehicle resolver contract
+├── external_vehicle.py   generic HTTPS VIN resolver
 ├── catalog.py            parts category tree
 ├── fitment.py            fitment contract + demo catalog
 ├── external_fitment.py   generic HTTP fitment adapter
@@ -321,7 +390,8 @@ app/
 ├── external_provider.py  generic HTTP price/stock adapter
 ├── search_service.py     aggregation/cache/timeout/ranking
 ├── service_kits.py       service kits
-└── price_alerts.py       price monitoring logic
+├── price_alerts.py       price monitoring logic
+└── observability.py      JSON logging + secret redaction
 ```
 
 ## CI
@@ -342,12 +412,12 @@ Docker build
 
 Основные оставшиеся внешние зависимости:
 
-1. реальный VIN decoder / vehicle catalog;
-2. лицензированный источник применимости;
+1. credentials и контракт реального VIN/vehicle catalog для уже готового adapter-а;
+2. лицензированный production-источник применимости;
 3. credentials и контракт первого настоящего магазина/дистрибьютора;
 4. реальные deeplink/affiliate URL;
 5. PostgreSQL/Redis при росте нагрузки;
-6. observability: structured logs, metrics, error reporting.
+6. внешние metrics/error reporting и production dashboards.
 
 Следующая рабочая цепочка уже поддержана архитектурой:
 
