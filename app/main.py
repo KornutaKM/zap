@@ -587,6 +587,137 @@ async def service_kit_callback(callback: CallbackQuery, state: FSMContext):
     )
 
 
+@dp.message(F.text == BTN_HISTORY)
+async def history_button(message: Message):
+    items = await list_recent_searches(message.from_user.id)
+    if not items:
+        await message.answer(
+            "История поиска пока пуста.",
+            reply_markup=main_menu((await get_vehicle(message.from_user.id)) is not None),
+        )
+        return
+
+    lines = ["<b>Последние запросы</b>", ""]
+    for item in items:
+        suffix = f" · {escape(item.vehicle_label)}" if item.vehicle_label else ""
+        lines.append(f"• {escape(item.query)}{suffix}")
+
+    await message.answer(
+        "\n".join(lines),
+        reply_markup=history_keyboard(items),
+    )
+
+
+@dp.callback_query(F.data.startswith("history:run:"))
+async def history_run_callback(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    if callback.message is None:
+        return
+
+    history_id = int((callback.data or "").rsplit(":", 1)[1])
+    item = await get_search_history_item(callback.from_user.id, history_id)
+    if item is None:
+        await callback.message.answer("Запрос в истории не найден.")
+        return
+
+    vehicle = await get_vehicle(callback.from_user.id)
+    note = None if vehicle else "Совместимость с автомобилем не проверялась."
+    await record_search(callback.from_user.id, item.query, vehicle)
+    await send_search_results(
+        callback.message,
+        state,
+        vehicle,
+        item.query,
+        compatibility_note=note,
+    )
+
+
+@dp.message(F.text == BTN_FAVORITES)
+async def favorites_button(message: Message):
+    items = await list_favorites(message.from_user.id)
+    if not items:
+        await message.answer(
+            "Избранных деталей пока нет.",
+            reply_markup=main_menu((await get_vehicle(message.from_user.id)) is not None),
+        )
+        return
+
+    await message.answer(
+        "<b>Избранные детали</b>\n"
+        "Откройте деталь, чтобы снова проверить предложения.",
+        reply_markup=favorites_keyboard(items),
+    )
+
+
+@dp.callback_query(F.data.startswith("favorite:add:"))
+async def favorite_add_callback(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    if callback.message is None:
+        return
+
+    index = int((callback.data or "").rsplit(":", 1)[1])
+    data = await state.get_data()
+    items = data.get("last_parts") or []
+    if index < 0 or index >= len(items):
+        await callback.message.answer("Эта выдача устарела.")
+        return
+
+    candidate = deserialize_candidate(items[index])
+    await add_favorite(
+        callback.from_user.id,
+        candidate.brand,
+        candidate.article,
+        candidate.title,
+    )
+    await callback.answer("Добавлено в избранное", show_alert=False)
+
+
+@dp.callback_query(F.data.startswith("favorite:open:"))
+async def favorite_open_callback(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    if callback.message is None:
+        return
+
+    favorite_id = int((callback.data or "").rsplit(":", 1)[1])
+    items = await list_favorites(callback.from_user.id)
+    favorite = next((item for item in items if item.id == favorite_id), None)
+    if favorite is None:
+        await callback.message.answer("Избранная деталь не найдена.")
+        return
+
+    vehicle = await get_vehicle(callback.from_user.id)
+    note = None if vehicle else "Совместимость с автомобилем не проверялась."
+    await record_search(callback.from_user.id, favorite.article, vehicle)
+    await send_search_results(
+        callback.message,
+        state,
+        vehicle,
+        favorite.article,
+        compatibility_note=note,
+    )
+
+
+@dp.callback_query(F.data.startswith("favorite:delete:"))
+async def favorite_delete_callback(callback: CallbackQuery):
+    await callback.answer()
+    if callback.message is None:
+        return
+
+    favorite_id = int((callback.data or "").rsplit(":", 1)[1])
+    await remove_favorite(callback.from_user.id, favorite_id)
+    items = await list_favorites(callback.from_user.id)
+
+    if not items:
+        await callback.message.edit_text("Избранных деталей больше нет.")
+        return
+
+    await callback.message.edit_text(
+        "<b>Избранные детали</b>\n"
+        "Откройте деталь, чтобы снова проверить предложения.",
+        reply_markup=favorites_keyboard(items),
+    )
+
+
 @dp.message(Command("search"))
 @dp.message(F.text == BTN_SEARCH)
 async def search_button(message: Message, state: FSMContext):
