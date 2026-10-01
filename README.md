@@ -1,12 +1,18 @@
 # Zap — Telegram-бот для подбора автозапчастей
 
-MVP Telegram-бота для подбора автомобильных запчастей, навигации по каталогу, сравнения предложений магазинов и повторных покупательских сценариев.
+Zap — обычный Telegram-бот без Mini App. Пользователь выбирает автомобиль, открывает каталог или пишет деталь своими словами, а backend разделяет три независимых задачи:
 
-## Что умеет текущая версия
+```text
+автомобиль → применимость → коммерческие предложения
+```
 
-Бот остаётся обычным Telegram-ботом — без Mini App. Интерфейс построен на reply-кнопках, inline-кнопках и обычных сообщениях.
+Это важно: цена магазина сама по себе не считается подтверждением совместимости.
 
-Главное меню при выбранном автомобиле:
+## Что уже реализовано
+
+### Telegram UX
+
+Главное меню:
 
 - 🔎 Найти запчасть
 - 📚 Каталог
@@ -14,212 +20,272 @@ MVP Telegram-бота для подбора автомобильных запч�
 - 🚗 Мой автомобиль
 - ⭐ Избранное
 - 🕘 История
+- 🔔 Цены
 
-Без сохранённого автомобиля доступны:
+Команды остаются резервным интерфейсом: `/start`, `/catalog`, `/search`, `/garage`, `/garage_add`.
 
-- 🚗 Добавить автомобиль
-- 📚 Каталог по модели
-- 🔎 Найти по артикулу
-- ⭐ Избранное
-- 🕘 История
-
-Команды `/catalog`, `/search`, `/garage`, `/garage_add` остаются резервным способом управления.
-
-## Каталог по марке и модели
-
-Можно написать прямо в чат:
-
-```text
-BMW X3
-```
-
-Для известных в demo-справочнике моделей бот сначала предлагает поколение:
-
-```text
-BMW X3 E83 · 2003–2010
-BMW X3 F25 · 2010–2017
-BMW X3 G01 · 2017–2024
-BMW X3 G45 · 2024–
-```
-
-После выбора открывается дерево каталога:
-
-```text
-Каталог
-├── ТО и фильтры
-├── Тормозная система
-├── Подвеска и рулевое
-├── Двигатель
-├── Охлаждение
-└── Электрика
-```
-
-Demo-резолвер поколений уже содержит несколько семейств BMW, Toyota, Volkswagen и Skoda. Неизвестная модель не блокируется: бот открывает общий каталог по введённому названию.
-
-## Поиск и выдача
-
-Можно написать:
+Бот понимает обычные запросы:
 
 ```text
 передние колодки
-масляный фильтр
-амортизаторы
+масляный фильтр подешевле
+амортизаторы срочно
 GDB1956
 ```
 
-По известному артикулу поиск работает и без автомобиля. В этом случае бот явно пишет, что совместимость не проверялась.
+Слова вроде «подешевле» и «срочно» автоматически переключают сортировку.
 
-Выдача теперь разделяет:
+## Автомобиль и модификация
+
+Гараж поддерживает несколько автомобилей. Можно:
+
+- добавлять автомобили;
+- переключать активный;
+- удалять;
+- уточнять модификацию.
+
+Базовые данные:
 
 ```text
-деталь
-  └── предложения магазинов
+марка
+модель
+год
+VIN (опционально)
 ```
 
-Например одна ATE `13.0460-7184.2` может иметь отдельные цены от нескольких поставщиков.
+После этого отдельный resolver может уточнить:
 
-В demo-режиме одна деталь получает предложения от:
+```text
+поколение
+двигатель
+топливо
+привод
+мощность
+modification_key
+```
 
-- Exist demo
-- Autodoc demo
-- Emex demo
+В demo-справочнике есть несколько модификаций BMW X3 G01, Toyota Camry XV70 и Volkswagen Tiguan II. Это именно демонстрационный resolver, а не VIN decoder.
 
-Пользователь видит до пяти подходящих деталей, может отсортировать их:
+Старая SQLite-схема мигрируется автоматически: новые поля добавляются без удаления существующих автомобилей. В CI есть отдельный regression-test, который создаёт старую таблицу и проверяет upgrade.
 
-- ⭐ рекомендуемые;
-- 💰 сначала дешевле;
-- 🚚 сначала быстрее;
+## Каталог применимости: OE и cross-reference
 
-и открыть карточку конкретной детали.
+Применимость вынесена в отдельный слой.
+
+Статусы:
+
+- ✅ `confirmed` — подтверждено каталогом по модификации;
+- 🟡 `probable` — совпала модель/поколение, но не вся модификация;
+- ⚪ `unverified` — подтверждения нет.
+
+Карточка детали показывает статус, OE-reference, причину статуса и предложения магазинов.
+
+Demo-fitment можно полностью отключить:
+
+```env
+DEMO_FITMENT_ENABLED=false
+```
+
+### Внешний fitment API
+
+Есть универсальный HTTPS-adapter. Он ожидает GET endpoint, например:
+
+```text
+GET /fitment/resolve
+?query=масляный+фильтр
+&brand=BMW
+&model=X3+G01
+&year=2020
+&generation=G01
+&engine=B47D20
+&drive=xDrive
+&modification_key=bmw_x3_g01_20d_xdrive
+```
+
+Ожидаемый JSON:
+
+```json
+{
+  "status": "confirmed",
+  "oe_numbers": ["34116889570"],
+  "crosses": [
+    {"brand": "ATE", "article": "13.0460-7184.2"},
+    {"brand": "TRW", "article": "GDB1956"}
+  ],
+  "reason": "Matched by vehicle modification"
+}
+```
+
+Конфигурация:
+
+```env
+FITMENT_API_ENABLED=true
+FITMENT_API_BASE_URL=https://catalog.example.com
+FITMENT_API_RESOLVE_PATH=/fitment/resolve
+FITMENT_API_KEY=...
+FITMENT_API_KEY_HEADER=Authorization
+FITMENT_API_AUTH_SCHEME=Bearer
+DEMO_FITMENT_ENABLED=false
+```
+
+HTTP по умолчанию запрещён; adapter требует HTTPS.
+
+## Предложения магазинов
+
+`PartsSearchService`:
+
+- опрашивает providers параллельно;
+- ставит timeout на каждый источник;
+- использует TTL-кэш;
+- переживает падение одного provider;
+- группирует предложения по `brand + article`;
+- ранжирует детали отдельно от коммерческих предложений;
+- затем накладывает fitment status.
+
+Demo-market имитирует Exist / Autodoc / Emex, но его можно выключить:
+
+```env
+DEMO_PROVIDER_ENABLED=false
+```
+
+### Внешний price/stock API
+
+Универсальный HTTPS provider принимает GET запрос:
+
+```text
+GET /search
+?query=GDB1956
+&brand=BMW
+&model=X3+G01
+&year=2020
+&engine=B47D20
+&drive=xDrive
+```
+
+Поддерживаемый ответ:
+
+```json
+{
+  "items": [
+    {
+      "provider": "Partner warehouse",
+      "brand": "TRW",
+      "article": "GDB1956",
+      "title": "Brake pad set",
+      "price": "6890.00",
+      "delivery_days": 2,
+      "quality": 0.9,
+      "url": "https://example.com/item/GDB1956",
+      "in_stock": true
+    }
+  ]
+}
+```
+
+Настройка:
+
+```env
+EXTERNAL_PROVIDER_ENABLED=true
+EXTERNAL_PROVIDER_NAME=Partner API
+EXTERNAL_PROVIDER_BASE_URL=https://partner.example.com
+EXTERNAL_PROVIDER_SEARCH_PATH=/search
+EXTERNAL_PROVIDER_API_KEY=...
+EXTERNAL_PROVIDER_API_KEY_HEADER=Authorization
+EXTERNAL_PROVIDER_AUTH_SCHEME=Bearer
+DEMO_PROVIDER_ENABLED=false
+```
 
 ## Карточка детали
 
-Карточка показывает:
+Показывает:
 
-- бренд;
-- артикул;
+- бренд и артикул;
 - название;
+- статус применимости;
+- OE-reference;
 - минимальную цену;
-- количество предложений;
-- цены и сроки по магазинам;
-- предупреждение о статусе проверки применимости.
+- предложения магазинов и сроки.
 
 Из карточки можно:
 
-- вернуться к вариантам;
-- добавить деталь в избранное;
-- начать новый поиск;
-- вернуться в каталог.
+- добавить в избранное;
+- включить отслеживание цены;
+- вернуться к выдаче;
+- начать новый поиск.
 
-Цены и применимость пока демонстрационные.
+## Price alerts
 
-## ТО и готовые комплекты
+Кнопка «🔔 Следить» создаёт порог по умолчанию на 5% ниже текущей цены.
 
-Раздел «ТО и обслуживание» содержит готовые demo-наборы:
+Worker:
+
+1. периодически запрашивает актуальные предложения;
+2. сравнивает минимальную цену с порогом;
+3. отправляет сообщение пользователю;
+4. только после успешной доставки отключает alert.
+
+Параметры:
+
+```env
+PRICE_ALERTS_ENABLED=true
+PRICE_ALERT_INTERVAL_SECONDS=3600
+PRICE_ALERT_DROP_PERCENT=5
+```
+
+Активные alerts можно посмотреть и удалить из меню «🔔 Цены».
+
+## ТО и комплекты
+
+Есть demo-наборы:
 
 - Базовое ТО;
 - Расширенное ТО;
 - Передние тормоза.
 
-Комплект собирается автоматически из лучших кандидатов по каждой позиции, показывает состав, ориентировочную общую стоимость и максимальный срок.
-
-Запросы внутри комплекта выполняются параллельно.
-
-## Гараж
-
-Гараж теперь поддерживает несколько автомобилей.
-
-Можно:
-
-- добавлять новые автомобили;
-- переключать активный автомобиль;
-- удалять активный автомобиль;
-- использовать активный автомобиль для поиска и каталога.
-
-При первом запуске после обновления старая single-car запись автоматически переносится в новую таблицу гаража.
-
-При добавлении автомобиля пользователь вводит:
-
-1. марку;
-2. модель;
-3. год;
-4. VIN — опционально.
-
-VIN в интерфейсе маскируется: показываются только последние 4 символа.
+Позиции комплекта ищутся параллельно. Бот показывает состав, ориентировочную общую стоимость и максимальный срок.
 
 ## История и избранное
 
-Последние поиски сохраняются в SQLite.
+SQLite хранит:
 
-Из истории можно одним нажатием повторить запрос и получить свежую выдачу.
+- последние запросы;
+- избранные артикулы;
+- несколько автомобилей;
+- выбранную модификацию;
+- price alerts.
 
-Из карточки детали можно сохранить:
+Из истории и избранного можно повторно запустить поиск и получить свежие предложения.
 
-```text
-бренд + артикул + название
-```
+## Polling и webhook
 
-в избранное, а затем снова проверить предложения магазинов.
-
-## Search backend
-
-`PartsSearchService` уже рассчитан на будущие внешние API:
-
-- параллельный опрос нескольких провайдеров;
-- таймаут отдельного поставщика;
-- TTL-кэш одинаковых запросов;
-- деградация при ошибке одного источника;
-- группировка предложений по детали;
-- ранжирование деталей отдельно от цен магазинов.
-
-Параметры задаются через environment:
+По умолчанию:
 
 ```env
-SEARCH_CACHE_TTL_SECONDS=60
-PROVIDER_TIMEOUT_SECONDS=5
+BOT_RUN_MODE=polling
 ```
 
-## Архитектура
+Для production можно переключить на webhook:
 
-```text
-app/
-├── main.py              Telegram handlers / FSM
-├── ui.py                reply + inline UI
-├── db.py                SQLite / SQLAlchemy
-├── domain.py            доменные модели и ranking
-├── catalog.py           дерево категорий
-├── providers.py         интерфейс источников + demo market
-├── search_service.py    агрегация, timeout, cache, grouping
-├── service_kits.py      готовые комплекты
-├── vehicle_parser.py    разбор марки/модели
-└── vehicle_catalog.py   demo-поколения автомобилей
+```env
+BOT_RUN_MODE=webhook
+WEBHOOK_URL=https://bot.example.com/webhook
+WEBHOOK_PATH=/webhook
+WEBHOOK_HOST=0.0.0.0
+WEBHOOK_PORT=8080
+WEBHOOK_SECRET_TOKEN=change-me
 ```
 
-Exist и Autodoc пока представлены точками подключения. Production-интеграции предполагают официальные API, партнёрские фиды или согласованные B2B-источники.
+Webhook mode использует `SimpleRequestHandler`, secret token и endpoint `/healthz`. Сервер начинает слушать порт до вызова Telegram `setWebhook`.
 
-## Локальный запуск
+## Запуск
 
-Требуется Python 3.12+.
+Python 3.12+:
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate
 pip install -e .
 cp .env.example .env
-```
-
-В `.env`:
-
-```env
-BOT_TOKEN=...
-DATABASE_URL=sqlite+aiosqlite:///autoparts.db
-SEARCH_CACHE_TTL_SECONDS=60
-PROVIDER_TIMEOUT_SECONDS=5
-```
-
-Запуск:
-
-```bash
 python -m app.main
 ```
 
@@ -232,54 +298,65 @@ cp .env.example .env
 docker compose up -d --build
 ```
 
-SQLite хранится в локальном каталоге `./data`, который монтируется в контейнер.
+SQLite хранится в `./data`.
+
+В webhook mode compose публикует `WEBHOOK_PORT` (по умолчанию 8080). Перед контейнером рекомендуется reverse proxy с HTTPS.
+
+## Архитектура
+
+```text
+app/
+├── main.py               Telegram handlers / orchestration
+├── ui.py                 reply + inline UI
+├── runtime.py            polling / webhook
+├── db.py                 SQLite / SQLAlchemy + additive migrations
+├── domain.py             domain models
+├── vehicle_parser.py     brand/model parsing
+├── vehicle_catalog.py    generation resolver
+├── vehicle_resolver.py   modification resolver
+├── catalog.py            parts category tree
+├── fitment.py            fitment contract + demo catalog
+├── external_fitment.py   generic HTTP fitment adapter
+├── providers.py          provider contract + demo market
+├── external_provider.py  generic HTTP price/stock adapter
+├── search_service.py     aggregation/cache/timeout/ranking
+├── service_kits.py       service kits
+└── price_alerts.py       price monitoring logic
+```
 
 ## CI
 
-GitHub Actions проверяет:
+GitHub Actions выполняет:
 
 ```text
 compileall
 import smoke test
+clean database smoke test
 pytest
 Docker build
 ```
 
-Тестами покрываются:
+Отдельным тестом проверяется upgrade старой схемы гаража.
 
-- ranking;
-- группировка предложений;
-- demo-market с несколькими магазинами;
-- сериализация карточек;
-- TTL-кэш;
-- дерево каталога;
-- поколения автомобилей;
-- UI formatting;
-- комплекты ТО.
+## Что пока не production-ready
 
-## Что ещё не production-ready
+Основные оставшиеся внешние зависимости:
 
-Пока отсутствуют:
+1. реальный VIN decoder / vehicle catalog;
+2. лицензированный источник применимости;
+3. credentials и контракт первого настоящего магазина/дистрибьютора;
+4. реальные deeplink/affiliate URL;
+5. PostgreSQL/Redis при росте нагрузки;
+6. observability: structured logs, metrics, error reporting.
 
-1. реальный VIN decoder;
-2. точная идентификация двигателя/привода/рестайлинга;
-3. лицензированный каталог применимости;
-4. реальные цены и наличие магазинов;
-5. подтверждённые deeplink/affiliate URL магазинов;
-6. PostgreSQL/Redis для масштабирования;
-7. webhook deployment вместо long polling;
-8. мониторинг и price alerts.
-
-## Следующий крупный этап
-
-Следующая важная задача — заменить demo-слой на реальную цепочку:
+Следующая рабочая цепочка уже поддержана архитектурой:
 
 ```text
 VIN / модель
 → точная модификация
-→ OE / cross numbers
-→ проверка применимости
-→ реальные провайдеры цен
+→ OE / cross
+→ fitment status
+→ цены и наличие нескольких providers
 → карточка детали
-→ переход в магазин
+→ price alert / переход в магазин
 ```
