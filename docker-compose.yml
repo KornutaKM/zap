@@ -8,3 +8,5 @@ services:
       DATABASE_URL: sqlite+aiosqlite:////data/autoparts.db
     volumes:
       - ./data:/data
+    ports:
+      - "${WEBHOOK_PORT:-8080}:${WEBHOOK_PORT:-8080}"
