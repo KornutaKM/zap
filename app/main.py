@@ -12,10 +12,11 @@ from aiogram.types import BotCommand, CallbackQuery, Message
 
 from app.catalog import get_node
 from app.config import settings
-from app.db import add_favorite, create_price_alert, delete_price_alert, delete_vehicle, get_search_history_item, get_vehicle, init_db, list_favorites, list_price_alerts, list_recent_searches, list_vehicles, record_search, remove_favorite, save_vehicle, set_active_vehicle, set_vehicle_modification, update_price_alert
+from app.db import add_favorite, create_price_alert, delete_price_alert, delete_vehicle, get_search_history_item, get_vehicle, init_db, list_favorites, list_price_alerts, list_recent_searches, list_vehicles, record_search, remove_favorite, save_vehicle, set_active_vehicle, set_vehicle_modification, update_price_alert, update_vehicle_from_resolution
 from app.domain import Vehicle
 from app.external_fitment import GenericHttpFitmentCatalog, HttpFitmentConfig
 from app.external_provider import GenericHttpProvider, HttpProviderConfig
+from app.external_vehicle import GenericHttpVehicleResolver, HttpVehicleResolverConfig
 from app.fitment import DemoFitmentCatalog
 from app.price_alerts import check_all_price_alerts
 from app.providers import AutodocProvider, ExistProvider, MockProvider
@@ -57,6 +58,7 @@ from app.search_service import PartsSearchService, deserialize_candidate, serial
 from app.service_kits import build_service_kit, get_service_kit
 from app.vehicle_catalog import find_generations, get_generation
 from app.vehicle_parser import parse_vehicle_text
+from app.vehicle_resolution import NullVehicleResolver, merge_vehicle_resolution
 from app.vehicle_resolver import find_modifications, get_modification, vehicle_is_precise
 
 
@@ -117,6 +119,20 @@ search_service = PartsSearchService(
     provider_timeout_seconds=app_settings.provider_timeout_seconds,
     fitment_catalog=fitment_catalog,
 )
+
+vehicle_resolver = NullVehicleResolver()
+if app_settings.vehicle_api_enabled and app_settings.vehicle_api_base_url:
+    vehicle_resolver = GenericHttpVehicleResolver(
+        HttpVehicleResolverConfig(
+            base_url=app_settings.vehicle_api_base_url,
+            vin_path=app_settings.vehicle_api_vin_path,
+            api_key=app_settings.vehicle_api_key,
+            api_key_header=app_settings.vehicle_api_key_header,
+            auth_scheme=app_settings.vehicle_api_auth_scheme,
+            allow_http=app_settings.vehicle_api_allow_http,
+        )
+    )
+
 dp = Dispatcher()
 
 
@@ -625,19 +641,38 @@ async def garage_vin(message: Message, state: FSMContext):
         data["year"],
         vin,
     )
+
+    vin_note = ""
+    if vin:
+        resolution = await vehicle_resolver.resolve_vin(vin)
+        if resolution.resolved:
+            merged = merge_vehicle_resolution(vehicle, resolution)
+            updated = await update_vehicle_from_resolution(
+                message.from_user.id,
+                merged,
+            )
+            if updated is not None:
+                vehicle = updated
+            vin_note = (
+                f"\n\nVIN распознан: <b>{escape(resolution.source or 'внешний каталог')}</b>."
+            )
+        elif resolution.status != "unavailable":
+            vin_note = f"\n\nVIN не уточнил модификацию: {escape(resolution.reason)}"
+
     await state.clear()
 
     modifications = find_modifications(vehicle)
     extra = (
         "\n\nДля этой модели найдено несколько модификаций. "
         "Откройте «Мой автомобиль» → «Уточнить модификацию»."
-        if len(modifications) > 1
+        if len(modifications) > 1 and not vehicle_is_precise(vehicle)
         else ""
     )
     await message.answer(
         "Автомобиль сохранён.\n\n"
         f"{vehicle_summary(vehicle)}\n"
         f"{vehicle_modification_text(vehicle)}"
+        f"{vin_note}"
         f"{extra}\n\n"
         "Теперь можно открыть каталог или сразу написать нужную деталь.",
         reply_markup=main_menu(True),
