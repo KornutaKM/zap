@@ -22,7 +22,7 @@ from app.middleware import RateLimitMiddleware
 from app.observability import configure_logging, log_event
 from app.commercial_rules import parse_provider_rules
 from app.price_history import summarize_price_history
-from app.procurement import PurchaseRequest, deserialize_purchase_plan, optimize_purchase, serialize_purchase_plan
+from app.procurement import PurchaseRequest, compare_purchase_plans, deserialize_purchase_plan, optimize_purchase, requests_from_plan, serialize_purchase_plan
 from app.query_parser import parse_search_query
 from app.rate_limit import build_rate_limiter
 from app.runtime import run_bot
@@ -58,7 +58,9 @@ from app.ui import (
     parts_results_keyboard,
     price_alert_target_keyboard,
     price_alerts_keyboard,
+    quote_refresh_keyboard,
     quotes_keyboard,
+    purchase_comparison_text,
     purchase_plan_keyboard,
     purchase_plan_text,
     purchase_plans_keyboard,
@@ -1378,8 +1380,15 @@ async def shopping_optimize_callback(callback: CallbackQuery, state: FSMContext)
         )
         return
 
+    vehicle_ids = {item.vehicle_id for item in items if item.vehicle_id is not None}
+    purchase_vehicle_id = (
+        next(iter(vehicle_ids))
+        if len(vehicle_ids) == 1
+        else None
+    )
     await state.update_data(
-        last_purchase_plans=[serialize_purchase_plan(plan) for plan in plans[:5]]
+        last_purchase_plans=[serialize_purchase_plan(plan) for plan in plans[:5]],
+        last_purchase_vehicle_id=purchase_vehicle_id,
     )
 
     lines = ["<b>Варианты закупки</b>", ""]
@@ -1479,10 +1488,14 @@ async def quote_save_callback(callback: CallbackQuery, state: FSMContext):
 
     plan_data = raw_plans[index]
     plan = deserialize_purchase_plan(plan_data)
-    vehicle = await get_vehicle(callback.from_user.id)
+    vehicle_id = data.get("last_purchase_vehicle_id")
+    if vehicle_id is None:
+        vehicle = await get_vehicle(callback.from_user.id)
+        vehicle_id = vehicle.id if vehicle else None
+
     quote = await save_purchase_quote(
         callback.from_user.id,
-        vehicle_id=vehicle.id if vehicle else None,
+        vehicle_id=vehicle_id,
         title=plan.title,
         grand_total=plan.grand_total,
         provider_count=plan.provider_count,
@@ -1521,6 +1534,111 @@ async def quote_open_callback(callback: CallbackQuery):
         f"Создан: {escape(created)}\n\n"
         f"{purchase_plan_text(plan, 1)}",
         reply_markup=saved_quote_keyboard(quote.id, plan),
+    )
+
+
+@dp.callback_query(F.data.startswith("quote:refresh:"))
+async def quote_refresh_callback(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    if callback.message is None:
+        return
+
+    try:
+        quote_id = int((callback.data or "").rsplit(":", 1)[1])
+    except ValueError:
+        return
+
+    loaded = await get_purchase_quote(callback.from_user.id, quote_id)
+    if loaded is None:
+        await callback.message.answer("Расчёт не найден.")
+        return
+
+    quote, snapshot = loaded
+    try:
+        saved_plan = deserialize_purchase_plan(snapshot)
+    except (KeyError, TypeError, ValueError):
+        await callback.message.answer("Snapshot расчёта повреждён.")
+        return
+
+    requests = requests_from_plan(saved_plan)
+    if not requests:
+        await callback.message.answer("В сохранённом расчёте нет позиций.")
+        return
+
+    vehicle = None
+    if quote.vehicle_id is not None:
+        vehicle = await get_vehicle_by_id(callback.from_user.id, quote.vehicle_id)
+    if vehicle is None:
+        vehicle = await get_vehicle(callback.from_user.id)
+
+    searches = await asyncio.gather(
+        *(search_service.parts(vehicle, request.article) for request in requests)
+    )
+
+    candidate_map = {}
+    missing: list[str] = []
+    for request, candidates in zip(requests, searches, strict=True):
+        if candidates:
+            await record_candidate_prices(candidates)
+
+        requested_article = _article_key(request.article)
+        requested_brand = request.brand.casefold()
+        candidate = next(
+            (
+                item
+                for item in candidates
+                if _article_key(item.article) == requested_article
+                and item.brand.casefold() == requested_brand
+            ),
+            None,
+        )
+        if candidate is None:
+            candidate = next(
+                (
+                    item
+                    for item in candidates
+                    if _article_key(item.article) == requested_article
+                ),
+                None,
+            )
+
+        if candidate is None:
+            missing.append(f"{request.brand} {request.article}")
+            continue
+        candidate_map[(request.brand.casefold(), request.article.casefold())] = candidate
+
+    current_plans = optimize_purchase(
+        requests,
+        candidate_map,
+        shipping_fee=app_settings.procurement_shipping_fee,
+        free_threshold=app_settings.procurement_free_shipping_threshold,
+        provider_rules=provider_commercial_rules,
+    )
+    if not current_plans:
+        await callback.message.answer(
+            "Не удалось получить актуальные предложения для сохранённого расчёта."
+        )
+        return
+
+    current = current_plans[0]
+    comparison = compare_purchase_plans(saved_plan, current)
+    await state.update_data(
+        last_purchase_plans=[serialize_purchase_plan(current)],
+        last_purchase_vehicle_id=quote.vehicle_id,
+    )
+
+    missing_text = ""
+    if missing:
+        missing_text = (
+            "\n\nНе удалось обновить: "
+            + ", ".join(escape(item) for item in missing)
+        )
+
+    await callback.message.edit_text(
+        f"{purchase_comparison_text(comparison, current)}"
+        f"{missing_text}\n\n"
+        f"{purchase_plan_text(current, 1)}",
+        reply_markup=quote_refresh_keyboard(quote.id, current, 0),
     )
 
 
