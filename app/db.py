@@ -1433,3 +1433,25 @@ async def replace_supplier_group_totals(
         await session.commit()
         await session.refresh(row)
         return _to_supplier_group(row)
+
+
+
+async def list_orders_for_status_monitor(
+    statuses: tuple[str, ...] = (
+        "checkout_pending",
+        "awaiting_manual_checkout",
+        "partially_placed",
+        "placed",
+    ),
+    limit: int = 200,
+) -> list[CustomerOrder]:
+    async with Session() as session:
+        rows = (
+            await session.scalars(
+                select(CustomerOrderRow)
+                .where(CustomerOrderRow.status.in_(statuses))
+                .order_by(CustomerOrderRow.id.asc())
+                .limit(limit)
+            )
+        ).all()
+        return [_to_customer_order(row) for row in rows]
