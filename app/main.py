@@ -12,7 +12,7 @@ from aiogram.types import BotCommand, CallbackQuery, Message
 
 from app.catalog import get_node
 from app.config import settings
-from app.db import add_favorite, create_price_alert, delete_price_alert, delete_vehicle, get_search_history_item, get_vehicle, init_db, list_favorites, list_price_alerts, list_recent_searches, list_vehicles, record_search, remove_favorite, save_vehicle, set_active_vehicle, set_vehicle_modification
+from app.db import add_favorite, create_price_alert, delete_price_alert, delete_vehicle, get_search_history_item, get_vehicle, init_db, list_favorites, list_price_alerts, list_recent_searches, list_vehicles, record_search, remove_favorite, save_vehicle, set_active_vehicle, set_vehicle_modification, update_price_alert
 from app.domain import Vehicle
 from app.external_provider import GenericHttpProvider, HttpProviderConfig
 from app.fitment import DemoFitmentCatalog
@@ -1292,6 +1292,11 @@ async def price_alert_worker(bot: Bot) -> None:
                     f"{escape(hit.alert.title)}\n\n"
                     f"Сейчас: <b>{price} ₽</b>\n"
                     f"Ваш порог: {target} ₽",
+                )
+                await update_price_alert(
+                    hit.alert.id,
+                    last_price=hit.current_price,
+                    triggered=True,
                 )
             except Exception:
                 continue
