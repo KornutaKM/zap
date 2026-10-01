@@ -22,6 +22,7 @@ Zap — обычный Telegram-бот без Mini App. Пользователь
 - 🕘 История
 - 🛒 Закупка
 - 🧰 Работы
+- 📄 Расчёты
 - 🔔 Цены
 
 Команды остаются резервным интерфейсом: `/start`, `/catalog`, `/search`, `/garage`, `/garage_add`.
@@ -282,14 +283,20 @@ DEMO_PROVIDER_ENABLED=false
 - всё в одном магазине, если один provider покрывает весь список;
 - общий оптимум с учётом цены деталей и оценочной доставки.
 
-Стоимость доставки пока является модельным допущением, а не данными конкретного магазина:
+Стоимость доставки имеет общий fallback:
 
 ```env
 PROCUREMENT_SHIPPING_FEE=500
 PROCUREMENT_FREE_SHIPPING_THRESHOLD=10000
 ```
 
-В карточке плана отдельно показываются стоимость деталей, оценочная доставка, итог, число магазинов и максимальный срок.
+Для известных providers можно задать собственные коммерческие правила одной JSON-настройкой:
+
+```env
+PROCUREMENT_PROVIDER_RULES_JSON={"Exist":{"shipping_fee":"350","free_threshold":"7000"},"Partner API":{"shipping_fee":"0","free_threshold":"0"}}
+```
+
+Если для provider есть правило, optimizer использует его; иначе применяется общий fallback. В карточке плана отдельно показываются стоимость деталей, оценочная доставка, итог, число магазинов и максимальный срок.
 
 Если внешний provider возвращает поле `url`, бот показывает deeplink-кнопку на конкретное предложение. Ссылки принимаются только с HTTP/HTTPS scheme.
 
@@ -319,6 +326,42 @@ PROCUREMENT_FREE_SHIPPING_THRESHOLD=10000
 Resolver раскладывает работы на поисковые позиции, учитывает базовое количество (например, два передних диска), выполняет поиск для активного автомобиля и добавляет найденные детали в список закупки. После этого пользователь может сразу запустить оптимизацию по магазинам.
 
 Важно: подбор по работам не заменяет окончательную техническую проверку применимости. Перед покупкой критичные позиции должны иметь подтверждённый fitment status.
+
+## Сохранённые расчёты
+
+Выбранный план закупки можно сохранить кнопкой «💾 Сохранить расчёт». Сохраняется snapshot:
+
+- состав позиций;
+- выбранные providers;
+- цены на момент расчёта;
+- оценочная доставка;
+- итоговая сумма;
+- deeplink URL, если provider их передал.
+
+Snapshot не меняется вслед за текущей корзиной или новыми ценами. Это позволяет сравнивать старый расчёт с новым.
+
+Открыть историю:
+
+```text
+/quotes
+```
+
+или кнопкой «📄 Расчёты».
+
+## История цены
+
+При пользовательском поиске, открытии каталога и пересчёте закупки бот сохраняет commercial observations для конкретного `provider + brand + article`.
+
+Одинаковая подряд цена с тем же сроком не создаёт новую точку, поэтому таблица хранит изменения, а не каждый повторный запрос.
+
+Из карточки детали доступна кнопка «📈 История цены». Она показывает по каждому provider:
+
+- последнюю наблюдаемую цену;
+- направление и процент изменения относительно самого старого доступного наблюдения;
+- минимальную/максимальную цену;
+- количество накопленных точек.
+
+Это история наблюдений самого бота, а не официальная биржевая или магазинная история цен.
 
 ## Price alerts
 
@@ -458,6 +501,8 @@ app/
 ├── service_kits.py       service kits
 ├── work_orders.py        work list → parts resolver
 ├── procurement.py        multi-store purchase optimizer
+├── commercial_rules.py   provider-specific delivery rules
+├── price_history.py      price trend summaries
 ├── price_alerts.py       price monitoring logic
 ├── alert_worker.py       reusable alert worker loop
 ├── worker.py             standalone background process
@@ -465,6 +510,25 @@ app/
 ├── db_init.py            schema initialization process
 └── observability.py      JSON logging + secret redaction
 ```
+
+## Миграции БД
+
+Схема теперь управляется Alembic. `init_db()` выполняет `upgrade head`, поэтому одинаковый механизм используется локально, в CI и в `db-init` production-container.
+
+Текущий baseline revision:
+
+```text
+20261001_0001
+```
+
+Первый revision сделан idempotent для перехода со старого `create_all`-режима:
+
+- на чистой БД создаёт всю текущую схему;
+- на существующей схеме не пересоздаёт таблицы;
+- добавляет недостающие поля старой `garage_vehicles`;
+- после schema upgrade выполняется legacy data migration автомобиля.
+
+Baseline содержит замороженное описание схемы и не импортирует текущие ORM-модели, поэтому будущие изменения должны оформляться отдельными Alembic revisions.
 
 ## Production deployment: PostgreSQL + Redis
 
@@ -581,6 +645,7 @@ compileall
 import smoke
 SQLite schema smoke
 PostgreSQL schema smoke
+Alembic revision check
 Redis cache roundtrip
 production bootstrap
 pytest
@@ -596,8 +661,8 @@ Docker build
 1. credentials и контракт реального VIN/vehicle catalog для уже готового adapter-а;
 2. лицензированный production-источник применимости;
 3. credentials и контракт первого настоящего магазина/дистрибьютора;
-4. реальные deeplink/affiliate URL и подтверждённые правила доставки поставщиков;
-5. полноценные миграции схемы через Alembic вместо текущего bootstrap/create_all;
+4. реальные deeplink/affiliate URL и подтверждённые коммерческие правила поставщиков;
+5. реальные checkout/order API для тех providers, которые разрешат оформление заказа;
 6. внешние metrics/error reporting и production dashboards.
 
 Следующая рабочая цепочка уже поддержана архитектурой:
