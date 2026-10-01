@@ -133,6 +133,14 @@ async def revalidate_order(
         return None
 
     order, groups, lines, _ = loaded
+    if order.status not in {"draft", "needs_attention", "price_changed", "ready"}:
+        return OrderRevalidationResult(
+            order=order,
+            missing_lines=(),
+            changed_lines=(),
+            confirmed_lines=0,
+        )
+
     lines_by_group: dict[int, list[OrderLine]] = {}
     for line in lines:
         lines_by_group.setdefault(line.group_id, []).append(line)
