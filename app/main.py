@@ -17,6 +17,7 @@ from app.config import settings
 from app.db import add_favorite, create_price_alert, delete_price_alert, delete_vehicle, get_search_history_item, get_vehicle, init_db, list_favorites, list_price_alerts, list_recent_searches, list_vehicles, record_search, remove_favorite, save_vehicle, set_active_vehicle, set_vehicle_modification, update_vehicle_from_resolution
 from app.domain import Vehicle
 from app.alert_worker import price_alert_loop
+from app.health import readiness
 from app.middleware import RateLimitMiddleware
 from app.observability import configure_logging, log_event
 from app.query_parser import parse_search_query
@@ -377,7 +378,21 @@ async def provider_status_command(message: Message):
         "degraded": "🟡",
         "open": "🔴",
     }
-    lines = ["<b>Статус источников</b>", ""]
+    ready, infra = await readiness(app_settings)
+    db_status = infra["database"]["status"]
+    redis_status = infra["redis"]["status"]
+
+    lines = [
+        "<b>Состояние Zap</b>",
+        "",
+        f"{'✅' if ready else '🔴'} infrastructure — "
+        f"DB {escape(str(db_status))} · Redis {escape(str(redis_status))}",
+        f"cache: <code>{escape(app_settings.search_cache_backend)}</code> · "
+        f"worker: <code>{escape(app_settings.price_alert_worker_mode)}</code>",
+        "",
+        "<b>Источники</b>",
+        "",
+    ]
     for item in search_service.provider_statuses():
         state = str(item["state"])
         latency = item["last_latency_ms"]
