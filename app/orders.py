@@ -1,9 +1,10 @@
 from dataclasses import dataclass
 from decimal import Decimal
 
-from app.checkout import CheckoutLine, CheckoutRegistry, CheckoutRequest
+from app.checkout import CheckoutDelivery, CheckoutLine, CheckoutRecipient, CheckoutRegistry, CheckoutRequest
 from app.db import (
     append_order_event,
+    attach_delivery_snapshot_to_order,
     create_customer_order,
     get_customer_order,
     replace_order_totals,
@@ -12,7 +13,8 @@ from app.db import (
     update_order_status,
     update_supplier_group_checkout,
 )
-from app.domain import CustomerOrder, OrderLine, SupplierOrderGroup, Vehicle
+from app.delivery import delivery_snapshot_is_complete, profile_to_snapshot
+from app.domain import CustomerOrder, DeliveryProfile, OrderLine, SupplierOrderGroup, Vehicle
 from app.procurement import (
     ProviderCommercialRule,
     PurchasePlan,
@@ -51,6 +53,7 @@ async def create_order_from_plan(
     shipping_fee: Decimal = Decimal("500"),
     free_threshold: Decimal = Decimal("10000"),
     provider_rules: dict[str, ProviderCommercialRule] | None = None,
+    delivery_profile: DeliveryProfile | None = None,
 ) -> CustomerOrder:
     grouped: dict[str, list] = {}
     for choice in plan.choices:
@@ -107,10 +110,18 @@ async def create_order_from_plan(
             }
         )
 
+    delivery_snapshot = (
+        profile_to_snapshot(delivery_profile)
+        if delivery_profile is not None
+        else None
+    )
+
     return await create_customer_order(
         user_id,
         vehicle_id=vehicle_id,
         source_quote_id=source_quote_id,
+        delivery_profile_id=delivery_profile.id if delivery_profile else None,
+        delivery_snapshot=delivery_snapshot,
         item_total=item_total,
         shipping_total=shipping_total,
         grand_total=item_total + shipping_total,
@@ -375,8 +386,52 @@ async def checkout_ready_order(
         return None
 
     order, groups, lines, _ = loaded
-    if order.status not in {"ready", "awaiting_manual_checkout", "partially_placed"}:
+    if order.status not in {
+        "ready",
+        "needs_delivery",
+        "awaiting_manual_checkout",
+        "partially_placed",
+    }:
         return order
+
+    if not delivery_snapshot_is_complete(order.delivery_snapshot):
+        return await update_order_status(
+            user_id,
+            order_id,
+            "needs_delivery",
+            message="Перед оформлением нужно заполнить данные получателя и доставки.",
+        )
+
+    snapshot = order.delivery_snapshot or {}
+    recipient = CheckoutRecipient(
+        full_name=str(snapshot["full_name"]),
+        phone=str(snapshot["phone"]),
+        email=(
+            str(snapshot["email"])
+            if snapshot.get("email")
+            else None
+        ),
+    )
+    delivery = CheckoutDelivery(
+        country=str(snapshot["country"]),
+        city=str(snapshot["city"]),
+        address_line1=str(snapshot["address_line1"]),
+        address_line2=(
+            str(snapshot["address_line2"])
+            if snapshot.get("address_line2")
+            else None
+        ),
+        postal_code=(
+            str(snapshot["postal_code"])
+            if snapshot.get("postal_code")
+            else None
+        ),
+        comment=(
+            str(snapshot["comment"])
+            if snapshot.get("comment")
+            else None
+        ),
+    )
 
     lines_by_group: dict[int, list[OrderLine]] = {}
     for line in lines:
@@ -423,6 +478,8 @@ async def checkout_ready_order(
                 for line in group_lines
             ),
             fallback_url=fallback_url,
+            recipient=recipient,
+            delivery=delivery,
         )
 
         adapter = registry.for_provider(group.provider)
@@ -616,4 +673,102 @@ async def cancel_local_order(
         order_id,
         "cancelled",
         message="Локальный заказ отменён до начала внешнего checkout.",
+    )
+
+
+
+async def apply_delivery_profile_to_order(
+    user_id: int,
+    order_id: int,
+    profile: DeliveryProfile,
+) -> CustomerOrder | None:
+    updated = await attach_delivery_snapshot_to_order(
+        user_id,
+        order_id,
+        delivery_profile_id=profile.id,
+        snapshot=profile_to_snapshot(profile),
+    )
+    if updated is None:
+        return None
+
+    if updated.status == "needs_delivery":
+        loaded = await get_customer_order(user_id, order_id)
+        if loaded is None:
+            return None
+        _, _, lines, _ = loaded
+        if lines and all(line.in_stock and line.price_confirmed for line in lines):
+            return await update_order_status(
+                user_id,
+                order_id,
+                "ready",
+                message="Данные доставки добавлены; заказ снова готов к оформлению.",
+            )
+    return updated
+
+
+async def request_external_order_cancellation(
+    user_id: int,
+    order_id: int,
+    registry: CheckoutRegistry,
+) -> CustomerOrder | None:
+    loaded = await get_customer_order(user_id, order_id)
+    if loaded is None:
+        return None
+
+    order, groups, _, _ = loaded
+    if order.status in {"cancelled", "completed"}:
+        return order
+
+    if not any(group.external_order_id for group in groups):
+        return await cancel_local_order(user_id, order_id)
+
+    statuses: list[str] = []
+    manual_block = False
+    for group in groups:
+        if group.status == "cancelled":
+            statuses.append("cancelled")
+            continue
+
+        if not group.external_order_id:
+            manual_block = True
+            statuses.append(group.status)
+            continue
+
+        adapter = registry.for_provider(group.provider)
+        result = await adapter.cancel_checkout(group.external_order_id)
+        effective_status = (
+            group.status
+            if result.status == "unknown"
+            else result.status
+        )
+        updated = await update_supplier_group_checkout(
+            order_id,
+            group.id,
+            status=effective_status,
+            checkout_mode=result.mode,
+            external_order_id=group.external_order_id,
+            checkout_url=result.checkout_url or group.checkout_url,
+            last_error=result.error,
+        )
+        statuses.append(updated.status if updated is not None else group.status)
+
+    if statuses and all(status == "cancelled" for status in statuses):
+        target = "cancelled"
+        message = "Все supplier-группы подтверждённо отменены."
+    elif any(status == "cancel_pending" for status in statuses):
+        target = "cancel_pending"
+        message = "Запрос отмены отправлен поставщикам."
+    else:
+        target = "cancel_requires_attention"
+        message = (
+            "Не все supplier-группы можно отменить автоматически."
+            if manual_block
+            else "Поставщик не подтвердил отмену заказа."
+        )
+
+    return await update_order_status(
+        user_id,
+        order_id,
+        target,
+        message=message,
     )
