@@ -11,7 +11,7 @@ from aiogram.types import BotCommand, Message
 
 from app.catalog import get_node
 from app.config import settings
-from app.db import delete_vehicle, get_vehicle, init_db, list_vehicles, save_vehicle, set_active_vehicle
+from app.db import add_favorite, delete_vehicle, get_search_history_item, get_vehicle, init_db, list_favorites, list_recent_searches, list_vehicles, record_search, remove_favorite, save_vehicle, set_active_vehicle
 from app.domain import Vehicle
 from app.providers import AutodocProvider, ExistProvider, MockProvider
 from app.ui import (
@@ -19,7 +19,9 @@ from app.ui import (
     BTN_ARTICLE,
     BTN_CANCEL,
     BTN_CATALOG,
+    BTN_FAVORITES,
     BTN_GARAGE,
+    BTN_HISTORY,
     BTN_MODEL_CATALOG,
     BTN_SEARCH,
     BTN_SERVICE,
@@ -28,8 +30,10 @@ from app.ui import (
     cancel_menu,
     catalog_keyboard,
     delete_vehicle_confirm_keyboard,
+    favorites_keyboard,
     garage_keyboard,
     generation_keyboard,
+    history_keyboard,
     main_menu,
     candidate_detail_text,
     candidate_text,
