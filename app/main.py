@@ -11,17 +11,13 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import BotCommand, CallbackQuery, Message
 
+from app.bootstrap import build_app_services
 from app.catalog import get_node
 from app.config import settings
 from app.db import add_favorite, create_price_alert, delete_price_alert, delete_vehicle, get_search_history_item, get_vehicle, init_db, list_favorites, list_price_alerts, list_recent_searches, list_vehicles, record_search, remove_favorite, save_vehicle, set_active_vehicle, set_vehicle_modification, update_price_alert, update_vehicle_from_resolution
 from app.domain import Vehicle
-from app.external_fitment import GenericHttpFitmentCatalog, HttpFitmentConfig
-from app.external_provider import GenericHttpProvider, HttpProviderConfig
-from app.external_vehicle import GenericHttpVehicleResolver, HttpVehicleResolverConfig
-from app.fitment import DemoFitmentCatalog
 from app.observability import configure_logging, log_event
 from app.price_alerts import check_all_price_alerts
-from app.providers import AutodocProvider, ExistProvider, MockProvider
 from app.query_parser import parse_search_query
 from app.runtime import run_bot
 from app.ui import (
@@ -57,11 +53,11 @@ from app.ui import (
     vehicle_modification_text,
     vehicle_summary,
 )
-from app.search_service import PartsSearchService, deserialize_candidate, serialize_candidate
+from app.search_service import deserialize_candidate, serialize_candidate
 from app.service_kits import build_service_kit, get_service_kit
 from app.vehicle_catalog import find_generations, get_generation
 from app.vehicle_parser import parse_vehicle_text
-from app.vehicle_resolution import NullVehicleResolver, merge_vehicle_resolution
+from app.vehicle_resolution import merge_vehicle_resolution
 from app.vehicle_resolver import find_modifications, get_modification, vehicle_is_precise
 
 
@@ -84,62 +80,11 @@ app_settings = settings()
 configure_logging(app_settings.log_level)
 logger = logging.getLogger("zap.main")
 
-providers = [ExistProvider(), AutodocProvider()]
-
-if app_settings.demo_provider_enabled:
-    providers.insert(0, MockProvider())
-
-if app_settings.external_provider_enabled and app_settings.external_provider_base_url:
-    providers.append(
-        GenericHttpProvider(
-            HttpProviderConfig(
-                name=app_settings.external_provider_name,
-                base_url=app_settings.external_provider_base_url,
-                search_path=app_settings.external_provider_search_path,
-                api_key=app_settings.external_provider_api_key,
-                api_key_header=app_settings.external_provider_api_key_header,
-                auth_scheme=app_settings.external_provider_auth_scheme,
-                allow_http=app_settings.external_provider_allow_http,
-            )
-        )
-    )
-
-fitment_catalog = None
-if app_settings.fitment_api_enabled and app_settings.fitment_api_base_url:
-    fitment_catalog = GenericHttpFitmentCatalog(
-        HttpFitmentConfig(
-            base_url=app_settings.fitment_api_base_url,
-            resolve_path=app_settings.fitment_api_resolve_path,
-            api_key=app_settings.fitment_api_key,
-            api_key_header=app_settings.fitment_api_key_header,
-            auth_scheme=app_settings.fitment_api_auth_scheme,
-            allow_http=app_settings.fitment_api_allow_http,
-        )
-    )
-elif app_settings.demo_fitment_enabled:
-    fitment_catalog = DemoFitmentCatalog()
-
-search_service = PartsSearchService(
-    providers,
-    cache_ttl_seconds=app_settings.search_cache_ttl_seconds,
-    provider_timeout_seconds=app_settings.provider_timeout_seconds,
-    fitment_catalog=fitment_catalog,
-    circuit_failure_threshold=app_settings.provider_circuit_failure_threshold,
-    circuit_cooldown_seconds=app_settings.provider_circuit_cooldown_seconds,
-)
-
-vehicle_resolver = NullVehicleResolver()
-if app_settings.vehicle_api_enabled and app_settings.vehicle_api_base_url:
-    vehicle_resolver = GenericHttpVehicleResolver(
-        HttpVehicleResolverConfig(
-            base_url=app_settings.vehicle_api_base_url,
-            vin_path=app_settings.vehicle_api_vin_path,
-            api_key=app_settings.vehicle_api_key,
-            api_key_header=app_settings.vehicle_api_key_header,
-            auth_scheme=app_settings.vehicle_api_auth_scheme,
-            allow_http=app_settings.vehicle_api_allow_http,
-        )
-    )
+services = build_app_services(app_settings)
+providers = services.providers
+fitment_catalog = services.fitment_catalog
+search_service = services.search_service
+vehicle_resolver = services.vehicle_resolver
 
 dp = Dispatcher()
 
