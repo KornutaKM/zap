@@ -33,11 +33,13 @@ class Settings(BaseSettings):
     checkout_api_base_url: str | None = None
     checkout_api_create_path: str = "/orders"
     checkout_api_status_path: str = "/orders/{external_order_id}"
+    checkout_api_cancel_path: str = "/orders/{external_order_id}/cancel"
     checkout_api_key: str | None = None
     checkout_api_key_header: str = "Authorization"
     checkout_api_auth_scheme: str = "Bearer"
     checkout_api_allow_http: bool = False
     checkout_api_timeout_seconds: float = 10.0
+    checkout_api_extra_payload_json: str | None = None
     demo_provider_enabled: bool = True
     demo_fitment_enabled: bool = True
     fitment_api_enabled: bool = False
