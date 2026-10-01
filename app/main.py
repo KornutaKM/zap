@@ -14,10 +14,10 @@ from aiogram.types import BotCommand, CallbackQuery, Message
 from app.bootstrap import build_app_services
 from app.catalog import get_node
 from app.config import settings
-from app.db import add_favorite, create_price_alert, delete_price_alert, delete_vehicle, get_search_history_item, get_vehicle, init_db, list_favorites, list_price_alerts, list_recent_searches, list_vehicles, record_search, remove_favorite, save_vehicle, set_active_vehicle, set_vehicle_modification, update_price_alert, update_vehicle_from_resolution
+from app.db import add_favorite, create_price_alert, delete_price_alert, delete_vehicle, get_search_history_item, get_vehicle, init_db, list_favorites, list_price_alerts, list_recent_searches, list_vehicles, record_search, remove_favorite, save_vehicle, set_active_vehicle, set_vehicle_modification, update_vehicle_from_resolution
 from app.domain import Vehicle
+from app.alert_worker import price_alert_loop
 from app.observability import configure_logging, log_event
-from app.price_alerts import check_all_price_alerts
 from app.query_parser import parse_search_query
 from app.runtime import run_bot
 from app.ui import (
@@ -1433,51 +1433,6 @@ async def free_text(message: Message, state: FSMContext):
     await message.answer("Что дальше?", reply_markup=main_menu(saved_vehicle is not None))
 
 
-async def price_alert_worker(bot: Bot) -> None:
-    interval = max(60, app_settings.price_alert_interval_seconds)
-    log_event(
-        logger,
-        logging.INFO,
-        "price_alert_worker_started",
-        "price alert worker started",
-        interval_seconds=interval,
-    )
-    while True:
-        await asyncio.sleep(interval)
-        try:
-            hits = await check_all_price_alerts(search_service)
-        except Exception as exc:
-            log_event(
-                logger,
-                logging.ERROR,
-                "price_alert_worker_failure",
-                "price alert worker iteration failed",
-                error=type(exc).__name__,
-            )
-            continue
-
-        for hit in hits:
-            price = f"{hit.current_price:,.0f}".replace(",", " ")
-            target = f"{hit.alert.target_price:,.0f}".replace(",", " ")
-            try:
-                await bot.send_message(
-                    hit.alert.telegram_user_id,
-                    "<b>Цена снизилась</b>\n\n"
-                    f"{escape(hit.alert.brand)} · "
-                    f"<code>{escape(hit.alert.article)}</code>\n"
-                    f"{escape(hit.alert.title)}\n\n"
-                    f"Сейчас: <b>{price} ₽</b>\n"
-                    f"Ваш порог: {target} ₽",
-                )
-                await update_price_alert(
-                    hit.alert.id,
-                    last_price=hit.current_price,
-                    triggered=True,
-                )
-            except Exception:
-                continue
-
-
 async def main():
     await init_db()
     log_event(
@@ -1505,8 +1460,19 @@ async def main():
         ]
     )
     alert_task = None
-    if app_settings.price_alerts_enabled:
-        alert_task = asyncio.create_task(price_alert_worker(bot))
+    worker_mode = app_settings.price_alert_worker_mode.casefold().strip()
+    if app_settings.price_alerts_enabled and worker_mode == "embedded":
+        alert_task = asyncio.create_task(
+            price_alert_loop(
+                bot,
+                search_service,
+                app_settings.price_alert_interval_seconds,
+            )
+        )
+    elif worker_mode not in {"embedded", "external", "disabled"}:
+        raise ValueError(
+            "PRICE_ALERT_WORKER_MODE must be embedded, external or disabled"
+        )
 
     try:
         await run_bot(bot, dp, app_settings)
