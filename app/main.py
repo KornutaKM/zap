@@ -623,10 +623,12 @@ async def search_query(message: Message, state: FSMContext):
             else None
         )
     )
+    search_vehicle = None if without_vehicle else vehicle
+    await record_search(message.from_user.id, query, search_vehicle)
     await send_search_results(
         message,
         state,
-        None if without_vehicle else vehicle,
+        search_vehicle,
         query,
         compatibility_note=note,
     )
@@ -841,6 +843,7 @@ async def free_text(message: Message, state: FSMContext):
         if source == "temporary"
         else None
     )
+    await record_search(message.from_user.id, text, vehicle)
     await send_search_results(message, state, vehicle, text, compatibility_note=note)
     saved_vehicle = await get_vehicle(message.from_user.id)
     await message.answer("Что дальше?", reply_markup=main_menu(saved_vehicle is not None))
