@@ -186,6 +186,7 @@ def optimize_purchase(
                     choices,
                     shipping_fee,
                     free_threshold,
+                    provider_rules,
                 )
             )
         plans.append(min(single_store_plans, key=lambda plan: plan.grand_total))
@@ -203,6 +204,7 @@ def optimize_purchase(
                 list(combo),
                 shipping_fee,
                 free_threshold,
+                provider_rules,
             )
             score = (
                 plan.grand_total,
