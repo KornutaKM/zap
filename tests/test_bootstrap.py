@@ -25,6 +25,7 @@ def settings_stub(**overrides):
         checkout_api_key_header="Authorization",
         checkout_api_auth_scheme="Bearer",
         checkout_api_allow_http=False,
+        checkout_api_timeout_seconds=10,
         demo_fitment_enabled=True,
         fitment_api_enabled=False,
         fitment_api_base_url=None,
