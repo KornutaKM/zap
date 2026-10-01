@@ -561,18 +561,31 @@ async def catalog_callback(callback: CallbackQuery, state: FSMContext):
         else "Применимость пока демонстрационная; в следующем этапе подключим проверку по VIN."
     )
 
-    ranked = await search_offers(vehicle, node.query)
-    if not ranked:
+    candidates = await search_service.parts(vehicle, node.query)
+    if not candidates:
         await callback.message.edit_text(
             "Предложений пока нет.",
-            reply_markup=results_keyboard(node.parent),
+            reply_markup=catalog_keyboard(node.parent or "root"),
         )
         return
 
-    body = (
-        offer_text("⭐ Лучший баланс", ranked["best"]) + "\n\n"
-        + offer_text("💰 Самый дешёвый", ranked["cheapest"]) + "\n\n"
-        + offer_text("🚚 Самый быстрый", ranked["fastest"])
+    visible = candidates[:5]
+    await state.update_data(
+        last_parts=[serialize_candidate(item) for item in visible],
+        last_query=node.query,
+        last_parent_id=node.parent,
+        last_vehicle={
+            "brand": vehicle.brand,
+            "model": vehicle.model,
+            "year": vehicle.year,
+            "vin": vehicle.vin,
+        },
+        last_compatibility_note=compatibility_note,
+    )
+
+    body = "\n\n".join(
+        candidate_text(index + 1, candidate)
+        for index, candidate in enumerate(visible)
     )
     year_text = f" · {vehicle.year}" if vehicle.year else ""
 
@@ -581,7 +594,7 @@ async def catalog_callback(callback: CallbackQuery, state: FSMContext):
         f"Категория: <b>{escape(node.title)}</b>\n\n"
         f"{body}\n\n"
         f"<i>{escape(compatibility_note)}</i>",
-        reply_markup=results_keyboard(node.parent),
+        reply_markup=parts_results_keyboard(visible, node.parent),
     )
 
 
