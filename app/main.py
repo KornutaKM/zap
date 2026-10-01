@@ -19,6 +19,7 @@ from app.fitment import DemoFitmentCatalog
 from app.price_alerts import check_all_price_alerts
 from app.providers import AutodocProvider, ExistProvider, MockProvider
 from app.query_parser import parse_search_query
+from app.runtime import run_bot
 from app.ui import (
     BTN_ADD_CAR,
     BTN_ALERTS,
@@ -1316,7 +1317,7 @@ async def main():
         alert_task = asyncio.create_task(price_alert_worker(bot))
 
     try:
-        await dp.start_polling(bot)
+        await run_bot(bot, dp, app_settings)
     finally:
         if alert_task is not None:
             alert_task.cancel()
