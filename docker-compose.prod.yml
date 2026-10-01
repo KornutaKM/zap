@@ -76,6 +76,25 @@ services:
       redis:
         condition: service_healthy
 
+  order-worker:
+    build: .
+    restart: unless-stopped
+    command: ["python", "-m", "app.order_worker"]
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://zap:${POSTGRES_PASSWORD:-zap}@postgres:5432/zap
+      REDIS_URL: redis://redis:6379/0
+      SEARCH_CACHE_BACKEND: redis
+      RATE_LIMIT_BACKEND: redis
+      PRICE_ALERT_WORKER_MODE: external
+      ORDER_STATUS_MONITOR_ENABLED: "true"
+    depends_on:
+      db-init:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+
 volumes:
   postgres_data:
   redis_data:
