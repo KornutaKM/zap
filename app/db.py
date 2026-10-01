@@ -1,11 +1,11 @@
 from datetime import datetime
 
-from sqlalchemy import BigInteger, Boolean, DateTime, Integer, String, func, select, text, update
+from sqlalchemy import BigInteger, Boolean, DateTime, Integer, Numeric, String, func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 from app.config import settings
-from app.domain import FavoritePart, SearchHistoryItem, Vehicle
+from app.domain import FavoritePart, PriceAlert, SearchHistoryItem, Vehicle
 
 
 class Base(DeclarativeBase):
@@ -43,6 +43,22 @@ class FavoritePartRow(Base):
     brand: Mapped[str] = mapped_column(String(120))
     article: Mapped[str] = mapped_column(String(120))
     title: Mapped[str] = mapped_column(String(250))
+
+
+class PriceAlertRow(Base):
+    __tablename__ = "price_alerts"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    telegram_user_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    vehicle_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    brand: Mapped[str] = mapped_column(String(120))
+    article: Mapped[str] = mapped_column(String(120), index=True)
+    title: Mapped[str] = mapped_column(String(250))
+    target_price: Mapped[object] = mapped_column(Numeric(12, 2))
+    last_price: Mapped[object | None] = mapped_column(Numeric(12, 2), nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    triggered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class GarageVehicleRow(Base):
@@ -429,3 +445,140 @@ async def clear_vehicle_modification(
         await session.commit()
         await session.refresh(row)
         return _to_vehicle(row)
+
+
+
+async def get_vehicle_by_id(user_id: int, vehicle_id: int) -> Vehicle | None:
+    async with Session() as session:
+        row = await session.scalar(
+            select(GarageVehicleRow).where(
+                GarageVehicleRow.id == vehicle_id,
+                GarageVehicleRow.telegram_user_id == user_id,
+            )
+        )
+        return None if row is None else _to_vehicle(row)
+
+
+async def create_price_alert(
+    user_id: int,
+    *,
+    vehicle_id: int | None,
+    brand: str,
+    article: str,
+    title: str,
+    target_price,
+    last_price=None,
+) -> PriceAlert:
+    from decimal import Decimal
+
+    target = Decimal(str(target_price))
+    last = Decimal(str(last_price)) if last_price is not None else None
+
+    async with Session() as session:
+        row = await session.scalar(
+            select(PriceAlertRow).where(
+                PriceAlertRow.telegram_user_id == user_id,
+                PriceAlertRow.vehicle_id == vehicle_id,
+                PriceAlertRow.brand == brand,
+                PriceAlertRow.article == article,
+                PriceAlertRow.is_active.is_(True),
+            )
+        )
+        if row is None:
+            row = PriceAlertRow(
+                telegram_user_id=user_id,
+                vehicle_id=vehicle_id,
+                brand=brand,
+                article=article,
+                title=title,
+                target_price=target,
+                last_price=last,
+                is_active=True,
+            )
+            session.add(row)
+        else:
+            row.target_price = target
+            row.last_price = last
+            row.title = title
+
+        await session.commit()
+        await session.refresh(row)
+        return PriceAlert(
+            id=row.id,
+            telegram_user_id=row.telegram_user_id,
+            vehicle_id=row.vehicle_id,
+            brand=row.brand,
+            article=row.article,
+            title=row.title,
+            target_price=Decimal(str(row.target_price)),
+            last_price=Decimal(str(row.last_price)) if row.last_price is not None else None,
+            is_active=row.is_active,
+        )
+
+
+async def list_price_alerts(
+    user_id: int | None = None,
+    *,
+    active_only: bool = True,
+) -> list[PriceAlert]:
+    from decimal import Decimal
+
+    async with Session() as session:
+        stmt = select(PriceAlertRow)
+        if user_id is not None:
+            stmt = stmt.where(PriceAlertRow.telegram_user_id == user_id)
+        if active_only:
+            stmt = stmt.where(PriceAlertRow.is_active.is_(True))
+        stmt = stmt.order_by(PriceAlertRow.id.desc())
+
+        rows = (await session.scalars(stmt)).all()
+        return [
+            PriceAlert(
+                id=row.id,
+                telegram_user_id=row.telegram_user_id,
+                vehicle_id=row.vehicle_id,
+                brand=row.brand,
+                article=row.article,
+                title=row.title,
+                target_price=Decimal(str(row.target_price)),
+                last_price=Decimal(str(row.last_price)) if row.last_price is not None else None,
+                is_active=row.is_active,
+            )
+            for row in rows
+        ]
+
+
+async def update_price_alert(
+    alert_id: int,
+    *,
+    last_price=None,
+    triggered: bool = False,
+) -> None:
+    from decimal import Decimal
+
+    async with Session() as session:
+        row = await session.get(PriceAlertRow, alert_id)
+        if row is None:
+            return
+
+        if last_price is not None:
+            row.last_price = Decimal(str(last_price))
+        if triggered:
+            row.is_active = False
+            row.triggered_at = datetime.utcnow()
+        await session.commit()
+
+
+async def delete_price_alert(user_id: int, alert_id: int) -> bool:
+    async with Session() as session:
+        row = await session.scalar(
+            select(PriceAlertRow).where(
+                PriceAlertRow.id == alert_id,
+                PriceAlertRow.telegram_user_id == user_id,
+            )
+        )
+        if row is None:
+            return False
+        await session.delete(row)
+        await session.commit()
+        return True
