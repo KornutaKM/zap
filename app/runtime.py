@@ -5,6 +5,7 @@ from aiohttp import web
 from aiogram import Bot, Dispatcher
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 
+from app.health import readiness
 from app.observability import log_event
 
 logger = logging.getLogger("zap.runtime")
@@ -34,9 +35,14 @@ async def run_webhook(bot: Bot, dispatcher: Dispatcher, settings) -> None:
     app = web.Application()
 
     async def healthz(request):
-        return web.Response(text="ok")
+        return web.json_response({"status": "ok"})
+
+    async def readyz(request):
+        ready, payload = await readiness(settings)
+        return web.json_response(payload, status=200 if ready else 503)
 
     app.router.add_get("/healthz", healthz)
+    app.router.add_get("/readyz", readyz)
 
     handler = SimpleRequestHandler(
         dispatcher=dispatcher,
