@@ -57,6 +57,30 @@ class ShoppingListItem:
 
 
 @dataclass(slots=True, frozen=True)
+class SavedPurchaseQuote:
+    id: int
+    telegram_user_id: int
+    title: str
+    grand_total: Decimal
+    provider_count: int
+    max_delivery_days: int
+    vehicle_id: int | None = None
+    status: str = "saved"
+    created_at: str | None = None
+
+
+@dataclass(slots=True, frozen=True)
+class PriceHistoryPoint:
+    id: int
+    provider: str
+    brand: str
+    article: str
+    price: Decimal
+    delivery_days: int
+    observed_at: str
+
+
+@dataclass(slots=True, frozen=True)
 class Offer:
     provider: str
     brand: str
