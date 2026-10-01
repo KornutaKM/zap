@@ -19,6 +19,7 @@ BTN_SERVICE = "🛠 ТО и обслуживание"
 BTN_GARAGE = "🚗 Мой автомобиль"
 BTN_FAVORITES = "⭐ Избранное"
 BTN_HISTORY = "🕘 История"
+BTN_ALERTS = "🔔 Цены"
 BTN_ADD_CAR = "🚗 Добавить автомобиль"
 BTN_MODEL_CATALOG = "📚 Каталог по модели"
 BTN_ARTICLE = "🔎 Найти по артикулу"
@@ -31,12 +32,14 @@ def main_menu(has_vehicle: bool) -> ReplyKeyboardMarkup:
             [KeyboardButton(text=BTN_SEARCH), KeyboardButton(text=BTN_CATALOG)],
             [KeyboardButton(text=BTN_SERVICE), KeyboardButton(text=BTN_GARAGE)],
             [KeyboardButton(text=BTN_FAVORITES), KeyboardButton(text=BTN_HISTORY)],
+            [KeyboardButton(text=BTN_ALERTS)],
         ]
     else:
         rows = [
             [KeyboardButton(text=BTN_ADD_CAR)],
             [KeyboardButton(text=BTN_MODEL_CATALOG), KeyboardButton(text=BTN_ARTICLE)],
             [KeyboardButton(text=BTN_FAVORITES), KeyboardButton(text=BTN_HISTORY)],
+            [KeyboardButton(text=BTN_ALERTS)],
         ]
 
     return ReplyKeyboardMarkup(
@@ -123,7 +126,10 @@ def parts_results_keyboard(
 
 def part_detail_keyboard(index: int, parent_id: str | None = None) -> InlineKeyboardMarkup:
     rows = [
-        [InlineKeyboardButton(text="⭐ В избранное", callback_data=f"favorite:add:{index}")],
+        [
+            InlineKeyboardButton(text="⭐ В избранное", callback_data=f"favorite:add:{index}"),
+            InlineKeyboardButton(text="🔔 Следить", callback_data=f"alert:add:{index}"),
+        ],
         [InlineKeyboardButton(text="← К вариантам", callback_data="partlist:back")],
         [
             InlineKeyboardButton(text="🔎 Новый поиск", callback_data="action:search"),
@@ -372,3 +378,21 @@ def vehicle_modification_text(vehicle: Vehicle) -> str:
         f"{vehicle.power_hp} л.с." if vehicle.power_hp else None,
     ]
     return " · ".join(escape(bit) for bit in bits if bit)
+
+
+
+def price_alerts_keyboard(alerts) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    for alert in alerts[:20]:
+        target = f"{alert.target_price:,.0f}".replace(",", " ")
+        rows.append([
+            InlineKeyboardButton(
+                text=f"{alert.brand} {alert.article} ≤ {target} ₽",
+                callback_data=f"alert:noop:{alert.id}",
+            ),
+            InlineKeyboardButton(
+                text="✕",
+                callback_data=f"alert:delete:{alert.id}",
+            ),
+        ])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
