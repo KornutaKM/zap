@@ -577,3 +577,36 @@ async def delete_price_alert(user_id: int, alert_id: int) -> bool:
         await session.delete(row)
         await session.commit()
         return True
+
+
+
+async def update_vehicle_from_resolution(
+    user_id: int,
+    vehicle: Vehicle,
+) -> Vehicle | None:
+    if vehicle.id is None:
+        return None
+
+    async with Session() as session:
+        row = await session.scalar(
+            select(GarageVehicleRow).where(
+                GarageVehicleRow.id == vehicle.id,
+                GarageVehicleRow.telegram_user_id == user_id,
+            )
+        )
+        if row is None:
+            return None
+
+        row.brand = vehicle.brand
+        row.model = vehicle.model
+        row.year = vehicle.year
+        row.vin = vehicle.vin
+        row.generation_code = vehicle.generation_code
+        row.engine = vehicle.engine
+        row.fuel = vehicle.fuel
+        row.drive = vehicle.drive
+        row.power_hp = vehicle.power_hp
+        row.modification_key = vehicle.modification_key
+        await session.commit()
+        await session.refresh(row)
+        return _to_vehicle(row)
