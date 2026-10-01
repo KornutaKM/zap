@@ -1,4 +1,5 @@
 import asyncio
+from decimal import Decimal
 from html import escape
 
 from aiogram import Bot, Dispatcher, F
@@ -11,14 +12,16 @@ from aiogram.types import BotCommand, CallbackQuery, Message
 
 from app.catalog import get_node
 from app.config import settings
-from app.db import add_favorite, delete_vehicle, get_search_history_item, get_vehicle, init_db, list_favorites, list_recent_searches, list_vehicles, record_search, remove_favorite, save_vehicle, set_active_vehicle, set_vehicle_modification
+from app.db import add_favorite, create_price_alert, delete_price_alert, delete_vehicle, get_search_history_item, get_vehicle, init_db, list_favorites, list_price_alerts, list_recent_searches, list_vehicles, record_search, remove_favorite, save_vehicle, set_active_vehicle, set_vehicle_modification
 from app.domain import Vehicle
 from app.external_provider import GenericHttpProvider, HttpProviderConfig
 from app.fitment import DemoFitmentCatalog
+from app.price_alerts import check_all_price_alerts
 from app.providers import AutodocProvider, ExistProvider, MockProvider
 from app.query_parser import parse_search_query
 from app.ui import (
     BTN_ADD_CAR,
+    BTN_ALERTS,
     BTN_ARTICLE,
     BTN_CANCEL,
     BTN_CATALOG,
@@ -43,6 +46,7 @@ from app.ui import (
     candidate_text,
     part_detail_keyboard,
     parts_results_keyboard,
+    price_alerts_keyboard,
     service_kits_keyboard,
     vehicle_modification_text,
     vehicle_summary,
@@ -867,6 +871,83 @@ async def favorite_delete_callback(callback: CallbackQuery):
     )
 
 
+@dp.message(F.text == BTN_ALERTS)
+async def price_alerts_button(message: Message):
+    alerts = await list_price_alerts(message.from_user.id)
+    if not alerts:
+        await message.answer(
+            "Активных уведомлений о цене пока нет.\n"
+            "Откройте карточку детали и нажмите «🔔 Следить».",
+            reply_markup=main_menu((await get_vehicle(message.from_user.id)) is not None),
+        )
+        return
+
+    await message.answer(
+        "<b>Отслеживание цен</b>\n"
+        "Бот уведомит, когда цена станет не выше указанного порога.",
+        reply_markup=price_alerts_keyboard(alerts),
+    )
+
+
+@dp.callback_query(F.data.startswith("alert:add:"))
+async def price_alert_add_callback(callback: CallbackQuery, state: FSMContext):
+    if callback.message is None:
+        return
+
+    index = int((callback.data or "").rsplit(":", 1)[1])
+    data = await state.get_data()
+    items = data.get("last_parts") or []
+    if index < 0 or index >= len(items):
+        await callback.answer("Эта выдача устарела", show_alert=True)
+        return
+
+    candidate = deserialize_candidate(items[index])
+    vehicle, _ = await get_catalog_vehicle(state, callback.from_user.id)
+    current_price = candidate.min_price
+    drop = Decimal(str(app_settings.price_alert_drop_percent)) / Decimal("100")
+    target_price = (current_price * (Decimal("1") - drop)).quantize(Decimal("1"))
+
+    alert = await create_price_alert(
+        callback.from_user.id,
+        vehicle_id=vehicle.id if vehicle else None,
+        brand=candidate.brand,
+        article=candidate.article,
+        title=candidate.title,
+        target_price=target_price,
+        last_price=current_price,
+    )
+    target = f"{alert.target_price:,.0f}".replace(",", " ")
+    await callback.answer(
+        f"Сообщу при цене ≤ {target} ₽",
+        show_alert=True,
+    )
+
+
+@dp.callback_query(F.data.startswith("alert:delete:"))
+async def price_alert_delete_callback(callback: CallbackQuery):
+    await callback.answer()
+    if callback.message is None:
+        return
+
+    alert_id = int((callback.data or "").rsplit(":", 1)[1])
+    await delete_price_alert(callback.from_user.id, alert_id)
+    alerts = await list_price_alerts(callback.from_user.id)
+    if not alerts:
+        await callback.message.edit_text("Активных уведомлений о цене больше нет.")
+        return
+
+    await callback.message.edit_text(
+        "<b>Отслеживание цен</b>\n"
+        "Бот уведомит, когда цена станет не выше указанного порога.",
+        reply_markup=price_alerts_keyboard(alerts),
+    )
+
+
+@dp.callback_query(F.data.startswith("alert:noop:"))
+async def price_alert_noop_callback(callback: CallbackQuery):
+    await callback.answer("Уведомление активно")
+
+
 @dp.message(Command("search"))
 @dp.message(F.text == BTN_SEARCH)
 async def search_button(message: Message, state: FSMContext):
@@ -1189,6 +1270,32 @@ async def free_text(message: Message, state: FSMContext):
     await message.answer("Что дальше?", reply_markup=main_menu(saved_vehicle is not None))
 
 
+async def price_alert_worker(bot: Bot) -> None:
+    interval = max(60, app_settings.price_alert_interval_seconds)
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            hits = await check_all_price_alerts(search_service)
+        except Exception:
+            continue
+
+        for hit in hits:
+            price = f"{hit.current_price:,.0f}".replace(",", " ")
+            target = f"{hit.alert.target_price:,.0f}".replace(",", " ")
+            try:
+                await bot.send_message(
+                    hit.alert.telegram_user_id,
+                    "<b>Цена снизилась</b>\n\n"
+                    f"{escape(hit.alert.brand)} · "
+                    f"<code>{escape(hit.alert.article)}</code>\n"
+                    f"{escape(hit.alert.title)}\n\n"
+                    f"Сейчас: <b>{price} ₽</b>\n"
+                    f"Ваш порог: {target} ₽",
+                )
+            except Exception:
+                continue
+
+
 async def main():
     await init_db()
     bot = Bot(
@@ -1204,7 +1311,19 @@ async def main():
             BotCommand(command="garage_add", description="Добавить автомобиль"),
         ]
     )
-    await dp.start_polling(bot)
+    alert_task = None
+    if app_settings.price_alerts_enabled:
+        alert_task = asyncio.create_task(price_alert_worker(bot))
+
+    try:
+        await dp.start_polling(bot)
+    finally:
+        if alert_task is not None:
+            alert_task.cancel()
+            try:
+                await alert_task
+            except asyncio.CancelledError:
+                pass
 
 
 if __name__ == "__main__":
