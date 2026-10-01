@@ -9,6 +9,12 @@ class Vehicle:
     year: int
     vin: str | None = None
     id: int | None = None
+    generation_code: str | None = None
+    engine: str | None = None
+    fuel: str | None = None
+    drive: str | None = None
+    power_hp: int | None = None
+    modification_key: str | None = None
 
 
 @dataclass(slots=True, frozen=True)
