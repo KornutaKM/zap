@@ -9,6 +9,7 @@ from aiogram.types import (
 
 from app.catalog import get_children, get_node
 from app.domain import Offer, Vehicle
+from app.vehicle_catalog import VehicleGeneration
 
 BTN_SEARCH = "🔎 Найти запчасть"
 BTN_CATALOG = "📚 Каталог"
@@ -71,6 +72,19 @@ def catalog_keyboard(node_id: str) -> InlineKeyboardMarkup:
     if node.parent:
         rows.append([InlineKeyboardButton(text="← Назад", callback_data=f"cat:{node.parent}")])
 
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def generation_keyboard(generations: list[VehicleGeneration]) -> InlineKeyboardMarkup:
+    rows = [
+        [
+            InlineKeyboardButton(
+                text=f"{item.family} {item.code} · {item.years}",
+                callback_data=f"vehgen:{item.key}",
+            )
+        ]
+        for item in generations
+    ]
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
