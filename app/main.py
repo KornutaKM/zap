@@ -14,13 +14,14 @@ from aiogram.types import BotCommand, CallbackQuery, Message
 from app.bootstrap import build_app_services
 from app.catalog import get_node
 from app.config import settings
-from app.db import add_favorite, add_shopping_item, change_shopping_quantity, clear_shopping_list, create_price_alert, delete_price_alert, delete_vehicle, get_search_history_item, get_vehicle, get_vehicle_by_id, init_db, list_favorites, list_price_alerts, list_recent_searches, list_shopping_items, list_vehicles, record_search, remove_favorite, remove_shopping_item, save_vehicle, set_active_vehicle, set_vehicle_modification, update_vehicle_from_resolution
+from app.db import add_favorite, add_shopping_item, change_shopping_quantity, clear_shopping_list, create_price_alert, delete_price_alert, delete_purchase_quote, delete_vehicle, get_purchase_quote, get_search_history_item, get_vehicle, get_vehicle_by_id, init_db, list_favorites, list_price_alerts, list_price_history, list_purchase_quotes, list_recent_searches, list_shopping_items, list_vehicles, record_price_observations, record_search, remove_favorite, remove_shopping_item, save_purchase_quote, save_vehicle, set_active_vehicle, set_vehicle_modification, update_vehicle_from_resolution
 from app.domain import Vehicle
 from app.alert_worker import price_alert_loop
 from app.health import readiness
 from app.middleware import RateLimitMiddleware
 from app.observability import configure_logging, log_event
 from app.commercial_rules import parse_provider_rules
+from app.price_history import summarize_price_history
 from app.procurement import PurchaseRequest, deserialize_purchase_plan, optimize_purchase, serialize_purchase_plan
 from app.query_parser import parse_search_query
 from app.rate_limit import build_rate_limiter
@@ -35,6 +36,7 @@ from app.ui import (
     BTN_GARAGE,
     BTN_HISTORY,
     BTN_MODEL_CATALOG,
+    BTN_QUOTES,
     BTN_SEARCH,
     BTN_SERVICE,
     BTN_SHOPPING,
@@ -56,9 +58,11 @@ from app.ui import (
     parts_results_keyboard,
     price_alert_target_keyboard,
     price_alerts_keyboard,
+    quotes_keyboard,
     purchase_plan_keyboard,
     purchase_plan_text,
     purchase_plans_keyboard,
+    saved_quote_keyboard,
     service_kits_keyboard,
     shopping_list_keyboard,
     shopping_list_text,
@@ -307,6 +311,27 @@ def vehicle_from_state(payload):
     )
 
 
+async def record_candidate_prices(candidates) -> None:
+    offers = [
+        offer
+        for candidate in candidates
+        for offer in candidate.offers
+        if offer.in_stock
+    ]
+    if offers:
+        try:
+            await record_price_observations(offers)
+        except Exception as exc:
+            log_event(
+                logger,
+                logging.WARNING,
+                "price_history_write_failed",
+                "failed to persist price observations",
+                error=type(exc).__name__,
+                offers=len(offers),
+            )
+
+
 async def send_search_results(
     message: Message,
     state: FSMContext,
@@ -317,6 +342,8 @@ async def send_search_results(
 ) -> None:
     parsed_query = parse_search_query(query)
     recommended = await search_service.parts(vehicle, parsed_query.part_query)
+    if recommended:
+        await record_candidate_prices(recommended)
     if not recommended:
         await message.answer(
             "По этому запросу предложений пока нет.",
@@ -1157,6 +1184,8 @@ async def _refresh_shopping_candidate(item):
         vehicle = await get_vehicle(item.telegram_user_id)
 
     candidates = await search_service.parts(vehicle, item.article)
+    if candidates:
+        await record_candidate_prices(candidates)
     requested_article = _article_key(item.article)
     requested_brand = item.brand.casefold()
 
@@ -1392,7 +1421,129 @@ async def shopping_plan_callback(callback: CallbackQuery, state: FSMContext):
     plan = deserialize_purchase_plan(raw_plans[index])
     await callback.message.edit_text(
         purchase_plan_text(plan, index + 1),
-        reply_markup=purchase_plan_keyboard(plan),
+        reply_markup=purchase_plan_keyboard(plan, index),
+    )
+
+
+@dp.message(Command("quotes"))
+@dp.message(F.text == BTN_QUOTES)
+async def quotes_button(message: Message):
+    quotes = await list_purchase_quotes(message.from_user.id)
+    if not quotes:
+        await message.answer(
+            "Сохранённых расчётов пока нет.\n"
+            "Откройте план закупки и нажмите «💾 Сохранить расчёт».",
+            reply_markup=main_menu((await get_vehicle(message.from_user.id)) is not None),
+        )
+        return
+
+    await message.answer(
+        "<b>Сохранённые расчёты</b>\n"
+        "Это snapshot цены и состава на момент сохранения.",
+        reply_markup=quotes_keyboard(quotes),
+    )
+
+
+@dp.callback_query(F.data == "quote:list")
+async def quote_list_callback(callback: CallbackQuery):
+    await callback.answer()
+    if callback.message is None:
+        return
+    quotes = await list_purchase_quotes(callback.from_user.id)
+    if not quotes:
+        await callback.message.edit_text("Сохранённых расчётов больше нет.")
+        return
+    await callback.message.edit_text(
+        "<b>Сохранённые расчёты</b>\n"
+        "Это snapshot цены и состава на момент сохранения.",
+        reply_markup=quotes_keyboard(quotes),
+    )
+
+
+@dp.callback_query(F.data.startswith("quote:save:"))
+async def quote_save_callback(callback: CallbackQuery, state: FSMContext):
+    if callback.message is None:
+        return
+
+    try:
+        index = int((callback.data or "").rsplit(":", 1)[1])
+    except ValueError:
+        await callback.answer("Некорректный расчёт", show_alert=True)
+        return
+
+    data = await state.get_data()
+    raw_plans = data.get("last_purchase_plans") or []
+    if index < 0 or index >= len(raw_plans):
+        await callback.answer("Расчёт устарел", show_alert=True)
+        return
+
+    plan_data = raw_plans[index]
+    plan = deserialize_purchase_plan(plan_data)
+    vehicle = await get_vehicle(callback.from_user.id)
+    quote = await save_purchase_quote(
+        callback.from_user.id,
+        vehicle_id=vehicle.id if vehicle else None,
+        title=plan.title,
+        grand_total=plan.grand_total,
+        provider_count=plan.provider_count,
+        max_delivery_days=plan.max_delivery_days,
+        snapshot=plan_data,
+    )
+    await callback.answer(f"Расчёт #{quote.id} сохранён", show_alert=False)
+
+
+@dp.callback_query(F.data.startswith("quote:open:"))
+async def quote_open_callback(callback: CallbackQuery):
+    await callback.answer()
+    if callback.message is None:
+        return
+
+    try:
+        quote_id = int((callback.data or "").rsplit(":", 1)[1])
+    except ValueError:
+        return
+
+    loaded = await get_purchase_quote(callback.from_user.id, quote_id)
+    if loaded is None:
+        await callback.message.answer("Расчёт не найден.")
+        return
+
+    quote, snapshot = loaded
+    try:
+        plan = deserialize_purchase_plan(snapshot)
+    except (KeyError, TypeError, ValueError):
+        await callback.message.answer("Snapshot расчёта повреждён.")
+        return
+
+    created = quote.created_at[:16].replace("T", " ") if quote.created_at else "—"
+    await callback.message.edit_text(
+        f"<b>Сохранённый расчёт #{quote.id}</b>\n"
+        f"Создан: {escape(created)}\n\n"
+        f"{purchase_plan_text(plan, 1)}",
+        reply_markup=saved_quote_keyboard(quote.id, plan),
+    )
+
+
+@dp.callback_query(F.data.startswith("quote:delete:"))
+async def quote_delete_callback(callback: CallbackQuery):
+    await callback.answer()
+    if callback.message is None:
+        return
+
+    try:
+        quote_id = int((callback.data or "").rsplit(":", 1)[1])
+    except ValueError:
+        return
+
+    await delete_purchase_quote(callback.from_user.id, quote_id)
+    quotes = await list_purchase_quotes(callback.from_user.id)
+    if not quotes:
+        await callback.message.edit_text("Сохранённых расчётов больше нет.")
+        return
+
+    await callback.message.edit_text(
+        "<b>Сохранённые расчёты</b>",
+        reply_markup=quotes_keyboard(quotes),
     )
 
 
@@ -1700,6 +1851,36 @@ async def part_detail_callback(callback: CallbackQuery, state: FSMContext):
     )
 
 
+@dp.callback_query(F.data.startswith("pricehist:"))
+async def price_history_callback(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    if callback.message is None:
+        return
+
+    try:
+        index = int((callback.data or "").rsplit(":", 1)[1])
+    except ValueError:
+        return
+
+    data = await state.get_data()
+    raw_items = data.get("last_parts") or []
+    if index < 0 or index >= len(raw_items):
+        await callback.message.answer("Эта выдача устарела.")
+        return
+
+    candidate = deserialize_candidate(raw_items[index])
+    points = await list_price_history(
+        candidate.brand,
+        candidate.article,
+        limit=40,
+    )
+    await callback.message.answer(
+        f"<b>{escape(candidate.brand)} · "
+        f"<code>{escape(candidate.article)}</code></b>\n\n"
+        f"{summarize_price_history(points)}"
+    )
+
+
 @dp.callback_query(F.data == "partlist:back")
 async def part_list_back_callback(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
@@ -1816,6 +1997,8 @@ async def catalog_callback(callback: CallbackQuery, state: FSMContext):
     )
 
     candidates = await search_service.parts(vehicle, node.query)
+    if candidates:
+        await record_candidate_prices(candidates)
     if not candidates:
         await callback.message.edit_text(
             "Предложений пока нет.",
@@ -1913,6 +2096,7 @@ async def main():
             BotCommand(command="garage_add", description="Добавить автомобиль"),
             BotCommand(command="works", description="Подбор по списку работ"),
             BotCommand(command="shopping", description="Список закупки"),
+            BotCommand(command="quotes", description="Сохранённые расчёты"),
             BotCommand(command="status", description="Статус источников"),
         ]
     )
