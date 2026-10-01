@@ -497,6 +497,77 @@ ORDER_STATUS_INTERVAL_SECONDS=300
 
 Worker проверяет только заказы, в которых есть `external_order_id`, и отправляет Telegram-уведомление только при реальном изменении общего статуса. Ручные deeplink-заказы автоматически не помечаются оформленными.
 
+## Поддержка и операторская очередь
+
+Пользовательские обращения доступны через:
+
+```text
+/cases
+```
+
+или кнопку «🆘 Обращения».
+
+Из карточки заказа можно:
+
+- сообщить о проблеме;
+- открыть запрос возврата для статусов `placed` / `completed`;
+- добавить сообщение в открытый кейс;
+- увидеть итоговую резолюцию оператора.
+
+Запрос возврата пока является workflow ручной обработки. Создание кейса не вызывает refund API и не обещает автоматический возврат денег.
+
+Order lifecycle автоматически создаёт дедуплицированный срочный кейс, если:
+
+- после revalidation часть позиций недоступна;
+- checkout завершился `needs_attention` / `partially_placed`;
+- provider cancellation перешёл в `cancel_requires_attention`.
+
+Повтор одной и той же системной проблемы не создаёт второй открытый кейс того же типа для того же заказа.
+
+### Operator mode
+
+Операторский доступ закрыт allowlist-ом:
+
+```env
+OPERATOR_USER_IDS=123456789,987654321
+```
+
+Если список пуст, `/ops` недоступен всем.
+
+Команда оператора:
+
+```text
+/ops
+```
+
+В очереди доступны фильтры:
+
+- все;
+- срочные;
+- возвраты;
+- мои;
+- неназначенные.
+
+Оператор может:
+
+- взять кейс в работу;
+- открыть карточку заказа без пользовательских checkout-кнопок;
+- добавить внутреннюю заметку;
+- закрыть кейс с пользовательской резолюцией.
+
+Внутренние operator notes не показываются пользователю. Закрытие кейса само по себе не меняет provider/order status и не имитирует действие внешнего магазина.
+
+### SLA
+
+SLA используется только как operational marker и не меняет бизнес-статусы:
+
+```env
+OPERATOR_SLA_URGENT_HOURS=4
+OPERATOR_SLA_NORMAL_HOURS=24
+```
+
+Просроченные кейсы отмечаются `⏰`, срочные — `⚠️`. Экран `/ops` показывает число открытых, взятых в работу, неназначенных, возвратных и SLA-overdue кейсов.
+
 ## История цены
 
 При пользовательском поиске, открытии каталога и пересчёте закупки бот сохраняет commercial observations для конкретного `provider + brand + article`.
@@ -557,7 +628,8 @@ PRICE_ALERT_DROP_PERCENT=5
 - постоянный список закупки и количество позиций;
 - профиль получателя и доставки;
 - delivery snapshots заказов;
-- заказы, supplier-группы и audit events.
+- заказы, supplier-группы и audit events;
+- обращения, возвратные кейсы и внутренние operator notes.
 
 Из истории и избранного можно повторно запустить поиск и получить свежие предложения.
 
@@ -663,6 +735,8 @@ app/
 ├── worker.py             standalone price-alert process
 ├── order_monitor.py      external order status monitoring
 ├── order_worker.py       standalone order-status process
+├── support_cases.py      support/return rules + SLA
+├── operators.py          operator allowlist
 ├── health.py             DB/Redis readiness
 ├── db_init.py            schema initialization process
 └── observability.py      JSON logging + secret redaction
@@ -675,7 +749,7 @@ app/
 Текущий Alembic head:
 
 ```text
-20261001_0003
+20261001_0004
 ```
 
 Revisions:
@@ -684,6 +758,7 @@ Revisions:
 20261001_0001  baseline существующей схемы
 20261001_0002  orders / supplier groups / order lines / audit events
 20261001_0003  delivery profiles / immutable order delivery snapshots
+20261001_0004  support cases / case notes / operator workflow
 ```
 
 Первый revision сделан idempotent для перехода со старого `create_all`-режима:
@@ -818,7 +893,7 @@ pytest
 Docker build
 ```
 
-Отдельно проверяются upgrade старой схемы гаража, Alembic head `0003`, delivery snapshots, shopping list, procurement optimizer, work resolver, order lifecycle, checkout/deeplink fallback, provider cancellation, rate limiting и production-compose topology.
+Отдельно проверяются upgrade старой схемы гаража, Alembic head `0004`, delivery snapshots, support case lifecycle, operator filters/SLA, shopping list, procurement optimizer, work resolver, order lifecycle, checkout/deeplink fallback, provider cancellation, rate limiting и production-compose topology.
 
 ## Что пока не production-ready
 
@@ -848,4 +923,6 @@ VIN / модель
 → delivery snapshot
 → API checkout / deeplink
 → status monitoring / provider cancellation
+→ support / return case
+→ operator resolution
 ```
