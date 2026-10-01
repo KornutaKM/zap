@@ -60,6 +60,7 @@ from app.ui import (
     operator_case_keyboard,
     operator_cases_keyboard,
     operator_order_keyboard,
+    operator_queue_text,
     order_case_text,
     favorites_keyboard,
     garage_keyboard,
@@ -1961,20 +1962,55 @@ async def show_operator_case(
         await message.answer(text, reply_markup=keyboard)
 
 
+async def load_operator_queue(
+    operator_user_id: int,
+    filter_name: str,
+):
+    if filter_name == "urgent":
+        return await list_operator_order_cases(priority="urgent")
+    if filter_name == "return":
+        return await list_operator_order_cases(case_type="return")
+    if filter_name == "mine":
+        return await list_operator_order_cases(
+            assigned_operator_user_id=operator_user_id
+        )
+    if filter_name == "unassigned":
+        return await list_operator_order_cases(only_unassigned=True)
+    return await list_operator_order_cases()
+
+
+async def render_operator_queue(
+    message: Message,
+    operator_user_id: int,
+    *,
+    filter_name: str = "all",
+    edit: bool = False,
+) -> None:
+    cases = await load_operator_queue(operator_user_id, filter_name)
+    text = operator_queue_text(
+        cases,
+        active_filter=filter_name,
+        urgent_sla_hours=app_settings.operator_sla_urgent_hours,
+        normal_sla_hours=app_settings.operator_sla_normal_hours,
+    )
+    keyboard = operator_cases_keyboard(
+        cases,
+        active_filter=filter_name,
+        urgent_sla_hours=app_settings.operator_sla_urgent_hours,
+        normal_sla_hours=app_settings.operator_sla_normal_hours,
+    )
+    if edit:
+        await message.edit_text(text, reply_markup=keyboard)
+    else:
+        await message.answer(text, reply_markup=keyboard)
+
+
 @dp.message(Command("ops"))
 async def operator_queue(message: Message):
     if not is_operator(message.from_user.id, operator_user_ids):
         await message.answer("Недоступно.")
         return
-
-    cases = await list_operator_order_cases()
-    if not cases:
-        await message.answer("Открытых кейсов нет.")
-        return
-    await message.answer(
-        "<b>Операторская очередь</b>",
-        reply_markup=operator_cases_keyboard(cases),
-    )
+    await render_operator_queue(message, message.from_user.id)
 
 
 @dp.callback_query(F.data == "ops:list")
@@ -1985,14 +2021,30 @@ async def operator_queue_callback(callback: CallbackQuery):
     if not is_operator(callback.from_user.id, operator_user_ids):
         await callback.message.answer("Недоступно.")
         return
+    await render_operator_queue(
+        callback.message,
+        callback.from_user.id,
+        edit=True,
+    )
 
-    cases = await list_operator_order_cases()
-    if not cases:
-        await callback.message.edit_text("Открытых кейсов нет.")
+
+@dp.callback_query(F.data.startswith("ops:filter:"))
+async def operator_filter_callback(callback: CallbackQuery):
+    await callback.answer()
+    if callback.message is None:
         return
-    await callback.message.edit_text(
-        "<b>Операторская очередь</b>",
-        reply_markup=operator_cases_keyboard(cases),
+    if not is_operator(callback.from_user.id, operator_user_ids):
+        await callback.message.answer("Недоступно.")
+        return
+
+    filter_name = (callback.data or "").rsplit(":", 1)[-1]
+    if filter_name not in {"all", "urgent", "return", "mine", "unassigned"}:
+        filter_name = "all"
+    await render_operator_queue(
+        callback.message,
+        callback.from_user.id,
+        filter_name=filter_name,
+        edit=True,
     )
 
 
