@@ -15,4 +15,6 @@ RUN mkdir -p /data
 
 ENV DATABASE_URL=sqlite+aiosqlite:////data/autoparts.db
 
+EXPOSE 8080
+
 CMD ["python", "-m", "app.main"]
