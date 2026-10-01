@@ -11,6 +11,7 @@ from app.catalog import get_children, get_node
 from app.domain import FavoritePart, Offer, PartCandidate, SearchHistoryItem, Vehicle
 from app.service_kits import BuiltKit, SERVICE_KITS
 from app.vehicle_catalog import VehicleGeneration
+from app.vehicle_resolver import VehicleModification
 
 BTN_SEARCH = "🔎 Найти запчасть"
 BTN_CATALOG = "📚 Каталог"
@@ -260,6 +261,12 @@ def garage_keyboard(
     if active_id is not None:
         rows.append([
             InlineKeyboardButton(
+                text="⚙️ Уточнить модификацию",
+                callback_data=f"garage:resolve:{active_id}",
+            )
+        ])
+        rows.append([
+            InlineKeyboardButton(
                 text="🗑 Удалить активный автомобиль",
                 callback_data=f"garage:delete:{active_id}",
             )
@@ -309,3 +316,37 @@ def favorites_keyboard(items: list[FavoritePart]) -> InlineKeyboardMarkup:
             ),
         ])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+
+def modification_keyboard(
+    vehicle_id: int,
+    modifications: list[VehicleModification],
+) -> InlineKeyboardMarkup:
+    rows = [
+        [
+            InlineKeyboardButton(
+                text=item.label,
+                callback_data=f"mod:{vehicle_id}:{item.key}",
+            )
+        ]
+        for item in modifications
+    ]
+    rows.append([
+        InlineKeyboardButton(text="← В гараж", callback_data="garage:canceldelete")
+    ])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def vehicle_modification_text(vehicle: Vehicle) -> str:
+    if not vehicle.modification_key:
+        return "Модификация не уточнена"
+
+    bits = [
+        vehicle.generation_code,
+        vehicle.engine,
+        vehicle.fuel,
+        vehicle.drive,
+        f"{vehicle.power_hp} л.с." if vehicle.power_hp else None,
+    ]
+    return " · ".join(escape(bit) for bit in bits if bit)
