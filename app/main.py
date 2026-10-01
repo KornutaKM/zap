@@ -39,7 +39,6 @@ from app.ui import (
     candidate_text,
     part_detail_keyboard,
     parts_results_keyboard,
-    results_keyboard,
     service_kits_keyboard,
     vehicle_summary,
 )
