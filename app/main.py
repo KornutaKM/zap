@@ -37,6 +37,7 @@ from app.ui import (
     BTN_SEARCH,
     BTN_SERVICE,
     BTN_SHOPPING,
+    BTN_WORKS,
     built_kit_keyboard,
     built_kit_text,
     cancel_menu,
@@ -62,6 +63,7 @@ from app.ui import (
     shopping_list_text,
     vehicle_modification_text,
     vehicle_summary,
+    work_packages_keyboard,
 )
 from app.search_service import deserialize_candidate, serialize_candidate
 from app.service_kits import build_service_kit, get_service_kit
@@ -69,6 +71,7 @@ from app.vehicle_catalog import find_generations, get_generation
 from app.vehicle_parser import parse_vehicle_text
 from app.vehicle_resolution import merge_vehicle_resolution
 from app.vehicle_resolver import find_modifications, get_modification, vehicle_is_precise
+from app.work_orders import WorkPart, get_work_package, parse_work_text
 
 
 class Garage(StatesGroup):
@@ -84,6 +87,10 @@ class SearchFlow(StatesGroup):
 
 class CatalogFlow(StatesGroup):
     vehicle = State()
+
+
+class WorkFlow(StatesGroup):
+    text = State()
 
 
 app_settings = settings()
@@ -974,6 +981,165 @@ async def favorite_delete_callback(callback: CallbackQuery):
     )
 
 
+async def _add_work_parts_to_shopping(
+    user_id: int,
+    vehicle: Vehicle,
+    parts: list[WorkPart] | tuple[WorkPart, ...],
+) -> tuple[list[str], list[str]]:
+    added: list[str] = []
+    missing: list[str] = []
+
+    searches = await asyncio.gather(
+        *(search_service.parts(vehicle, item.query) for item in parts)
+    )
+    for work_part, candidates in zip(parts, searches, strict=True):
+        if not candidates:
+            missing.append(work_part.label or work_part.query)
+            continue
+
+        candidate = candidates[0]
+        await add_shopping_item(
+            user_id,
+            vehicle_id=vehicle.id,
+            brand=candidate.brand,
+            article=candidate.article,
+            title=candidate.title,
+            quantity=work_part.quantity,
+        )
+        added.append(
+            f"{work_part.label or candidate.title}: "
+            f"{candidate.brand} {candidate.article} × {work_part.quantity}"
+        )
+
+    return added, missing
+
+
+@dp.message(F.text == BTN_WORKS)
+async def works_button(message: Message, state: FSMContext):
+    vehicle = await get_vehicle(message.from_user.id)
+    if vehicle is None:
+        await message.answer(
+            "Для подбора по работам сначала добавьте автомобиль.",
+            reply_markup=main_menu(False),
+        )
+        return
+
+    await state.clear()
+    await message.answer(
+        f"{vehicle_summary(vehicle)}\n\n"
+        "<b>Что планируем делать?</b>\n"
+        "Выберите типовой пакет или напишите свой список работ.",
+        reply_markup=work_packages_keyboard(),
+    )
+
+
+@dp.callback_query(F.data.startswith("work:pkg:"))
+async def work_package_callback(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    if callback.message is None:
+        return
+
+    package_id = (callback.data or "").rsplit(":", 1)[1]
+    package = get_work_package(package_id)
+    if package is None:
+        await callback.message.answer("Пакет работ не найден.")
+        return
+
+    vehicle = await get_vehicle(callback.from_user.id)
+    if vehicle is None:
+        await callback.message.answer("Сначала добавьте автомобиль.")
+        return
+
+    added, missing = await _add_work_parts_to_shopping(
+        callback.from_user.id,
+        vehicle,
+        package.parts,
+    )
+    items = await list_shopping_items(callback.from_user.id)
+
+    lines = [
+        f"<b>{escape(package.title)}</b>",
+        escape(package.description),
+        "",
+        f"Добавлено позиций: <b>{len(added)}</b>",
+    ]
+    if added:
+        lines.extend([""] + [f"• {escape(item)}" for item in added])
+    if missing:
+        lines.extend([
+            "",
+            "Не удалось подобрать: " + ", ".join(escape(item) for item in missing),
+        ])
+    lines.extend(["", "Позиции добавлены в список закупки."])
+
+    await state.clear()
+    await callback.message.edit_text(
+        "\n".join(lines),
+        reply_markup=shopping_list_keyboard(items),
+    )
+
+
+@dp.callback_query(F.data == "work:custom")
+async def custom_work_callback(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    if callback.message is None:
+        return
+
+    vehicle = await get_vehicle(callback.from_user.id)
+    if vehicle is None:
+        await callback.message.answer("Сначала добавьте автомобиль.")
+        return
+
+    await state.set_state(WorkFlow.text)
+    await callback.message.answer(
+        "Напишите список работ одной фразой. Например:\n"
+        "<code>замена масла, салонный фильтр, передние тормоза</code>",
+        reply_markup=cancel_menu(),
+    )
+
+
+@dp.message(WorkFlow.text, F.text)
+async def custom_work_text(message: Message, state: FSMContext):
+    vehicle = await get_vehicle(message.from_user.id)
+    if vehicle is None:
+        await state.clear()
+        await message.answer("Автомобиль не найден.", reply_markup=main_menu(False))
+        return
+
+    parts = parse_work_text(message.text or "")
+    if not parts:
+        await message.answer(
+            "Не смог разложить этот список на известные позиции. "
+            "Попробуйте, например: <code>замена масла, передние тормоза</code>."
+        )
+        return
+
+    added, missing = await _add_work_parts_to_shopping(
+        message.from_user.id,
+        vehicle,
+        parts,
+    )
+    items = await list_shopping_items(message.from_user.id)
+    await state.clear()
+
+    lines = [
+        "<b>Список работ разобран</b>",
+        f"Добавлено позиций: <b>{len(added)}</b>",
+    ]
+    if added:
+        lines.extend([""] + [f"• {escape(item)}" for item in added])
+    if missing:
+        lines.extend([
+            "",
+            "Не удалось подобрать: " + ", ".join(escape(item) for item in missing),
+        ])
+
+    await message.answer(
+        "\n".join(lines),
+        reply_markup=shopping_list_keyboard(items),
+    )
+
+
 def _article_key(value: str) -> str:
     return "".join(ch for ch in value.casefold() if ch.isalnum())
 
@@ -1114,7 +1280,7 @@ async def shopping_clear_callback(callback: CallbackQuery):
     )
 
 
-@dp.callback_query(F.data.in_({"shop:back", "shop:item"}))
+@dp.callback_query(F.data == "shop:back")
 async def shopping_back_callback(callback: CallbackQuery):
     await callback.answer()
     if callback.message is None:
@@ -1124,6 +1290,11 @@ async def shopping_back_callback(callback: CallbackQuery):
         shopping_list_text(items),
         reply_markup=shopping_list_keyboard(items),
     )
+
+
+@dp.callback_query(F.data.startswith("shop:item:"))
+async def shopping_item_callback(callback: CallbackQuery):
+    await callback.answer("Позиция находится в списке закупки.")
 
 
 @dp.callback_query(F.data == "shop:optimize")
