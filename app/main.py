@@ -12,7 +12,7 @@ from aiogram.types import BotCommand, Message
 from app.catalog import get_node
 from app.config import settings
 from app.db import get_vehicle, init_db, save_vehicle
-from app.domain import Vehicle, rank_offers
+from app.domain import Vehicle
 from app.providers import AutodocProvider, ExistProvider, MockProvider
 from app.ui import (
     BTN_ADD_CAR,
@@ -27,10 +27,14 @@ from app.ui import (
     catalog_keyboard,
     generation_keyboard,
     main_menu,
-    offer_text,
+    candidate_detail_text,
+    candidate_text,
+    part_detail_keyboard,
+    parts_results_keyboard,
     results_keyboard,
     vehicle_summary,
 )
+from app.search_service import PartsSearchService, deserialize_candidate, serialize_candidate
 from app.vehicle_catalog import find_generations, get_generation
 from app.vehicle_parser import parse_vehicle_text
 
@@ -51,6 +55,7 @@ class CatalogFlow(StatesGroup):
 
 
 providers = [MockProvider(), ExistProvider(), AutodocProvider()]
+search_service = PartsSearchService(providers)
 dp = Dispatcher()
 
 
