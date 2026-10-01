@@ -19,6 +19,12 @@ class Settings(BaseSettings):
     price_alerts_enabled: bool = True
     price_alert_interval_seconds: int = 3600
     price_alert_drop_percent: float = 5.0
+    bot_run_mode: str = "polling"
+    webhook_url: str | None = None
+    webhook_path: str = "/webhook"
+    webhook_host: str = "0.0.0.0"
+    webhook_port: int = 8080
+    webhook_secret_token: str | None = None
 
     model_config = SettingsConfigDict(
         env_file=".env",
