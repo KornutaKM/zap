@@ -28,6 +28,15 @@ class Settings(BaseSettings):
     external_provider_api_key_header: str = "Authorization"
     external_provider_auth_scheme: str = "Bearer"
     external_provider_allow_http: bool = False
+    checkout_api_enabled: bool = False
+    checkout_api_provider_name: str = "Partner API"
+    checkout_api_base_url: str | None = None
+    checkout_api_create_path: str = "/orders"
+    checkout_api_status_path: str = "/orders/{external_order_id}"
+    checkout_api_key: str | None = None
+    checkout_api_key_header: str = "Authorization"
+    checkout_api_auth_scheme: str = "Bearer"
+    checkout_api_allow_http: bool = False
     demo_provider_enabled: bool = True
     demo_fitment_enabled: bool = True
     fitment_api_enabled: bool = False
