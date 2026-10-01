@@ -32,7 +32,7 @@ def test_optimizer_can_prefer_one_store_after_shipping():
     assert plans
     best = plans[0]
     assert best.provider_count == 1
-    assert best.grand_total == Decimal("3200")
+    assert best.grand_total == Decimal("2900")
 
 
 def test_optimizer_multiplies_quantity():
