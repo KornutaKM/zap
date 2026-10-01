@@ -1,5 +1,6 @@
 from collections import defaultdict
 from decimal import Decimal
+from html import escape
 
 from app.domain import PriceHistoryPoint
 
@@ -42,7 +43,7 @@ def summarize_price_history(
         percent_text = f"{abs(percent):.1f}"
 
         lines.append(
-            f"<b>{provider}</b>: {newest_text} ₽ {direction} {percent_text}%\n"
+            f"<b>{escape(provider)}</b>: {newest_text} ₽ {direction} {percent_text}%\n"
             f"диапазон наблюдений: {min_text}–{max_text} ₽ · точек: {len(items)}"
         )
 
