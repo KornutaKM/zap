@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from decimal import Decimal
+import json
 from typing import Protocol
 from urllib.parse import quote, urljoin, urlparse
 
@@ -96,6 +97,18 @@ class DeeplinkCheckoutAdapter:
             external_order_id=external_order_id,
             error="Ручной заказ нельзя отменить без API поставщика.",
         )
+
+
+def parse_checkout_extra_payload(raw: str | None) -> dict:
+    if not raw or not raw.strip():
+        return {}
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError("CHECKOUT_API_EXTRA_PAYLOAD_JSON must be valid JSON") from exc
+    if not isinstance(data, dict):
+        raise ValueError("CHECKOUT_API_EXTRA_PAYLOAD_JSON must be a JSON object")
+    return data
 
 
 @dataclass(frozen=True, slots=True)
