@@ -64,8 +64,13 @@ class CatalogFlow(StatesGroup):
     vehicle = State()
 
 
+app_settings = settings()
 providers = [MockProvider(), ExistProvider(), AutodocProvider()]
-search_service = PartsSearchService(providers)
+search_service = PartsSearchService(
+    providers,
+    cache_ttl_seconds=app_settings.search_cache_ttl_seconds,
+    provider_timeout_seconds=app_settings.provider_timeout_seconds,
+)
 dp = Dispatcher()
 
 
@@ -1042,7 +1047,7 @@ async def free_text(message: Message, state: FSMContext):
 async def main():
     await init_db()
     bot = Bot(
-        settings().bot_token,
+        app_settings.bot_token,
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
     )
     await bot.set_my_commands(
