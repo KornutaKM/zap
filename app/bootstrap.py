@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 
 from app.cache_backend import SearchCache, build_search_cache
+from app.checkout import CheckoutRegistry, GenericHttpCheckoutAdapter, HttpCheckoutConfig
 from app.external_fitment import GenericHttpFitmentCatalog, HttpFitmentConfig
 from app.external_provider import GenericHttpProvider, HttpProviderConfig
 from app.external_vehicle import GenericHttpVehicleResolver, HttpVehicleResolverConfig
@@ -17,6 +18,7 @@ class AppServices:
     search_cache: SearchCache
     search_service: PartsSearchService
     vehicle_resolver: VehicleResolver
+    checkout_registry: CheckoutRegistry
 
 
 def build_providers(settings) -> list[PartsProvider]:
@@ -74,6 +76,26 @@ def build_vehicle_resolver(settings) -> VehicleResolver:
     return NullVehicleResolver()
 
 
+def build_checkout_registry(settings) -> CheckoutRegistry:
+    adapters = []
+    if settings.checkout_api_enabled and settings.checkout_api_base_url:
+        adapters.append(
+            GenericHttpCheckoutAdapter(
+                HttpCheckoutConfig(
+                    provider_name=settings.checkout_api_provider_name,
+                    base_url=settings.checkout_api_base_url,
+                    create_path=settings.checkout_api_create_path,
+                    status_path=settings.checkout_api_status_path,
+                    api_key=settings.checkout_api_key,
+                    api_key_header=settings.checkout_api_key_header,
+                    auth_scheme=settings.checkout_api_auth_scheme,
+                    allow_http=settings.checkout_api_allow_http,
+                )
+            )
+        )
+    return CheckoutRegistry(adapters)
+
+
 def build_app_services(settings) -> AppServices:
     providers = build_providers(settings)
     fitment_catalog = build_fitment_catalog(settings)
@@ -96,4 +118,5 @@ def build_app_services(settings) -> AppServices:
         search_cache=search_cache,
         search_service=search_service,
         vehicle_resolver=build_vehicle_resolver(settings),
+        checkout_registry=build_checkout_registry(settings),
     )
