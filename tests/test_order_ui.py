@@ -1,7 +1,7 @@
 from decimal import Decimal
 
 from app.domain import CustomerOrder, SupplierOrderGroup
-from app.ui import order_detail_keyboard, orders_keyboard
+from app.ui import external_cancel_confirm_keyboard, order_detail_keyboard, orders_keyboard
 
 
 def order(status: str, *, with_delivery: bool = True) -> CustomerOrder:
@@ -101,3 +101,24 @@ def test_ready_order_without_delivery_blocks_checkout_button():
     )
     assert "order:checkout:7" not in values
     assert "order:delivery:7" in values
+
+
+
+def test_external_order_cancel_requires_second_confirmation():
+    group = SupplierOrderGroup(
+        id=3,
+        order_id=7,
+        provider="API Store",
+        status="placed",
+        item_total=Decimal("1000"),
+        shipping_total=Decimal("500"),
+        grand_total=Decimal("1500"),
+        checkout_mode="api",
+        external_order_id="ext-123",
+    )
+    markup = order_detail_keyboard(order("placed"), [group])
+    assert "order:cancel_external:7" in callbacks(markup)
+
+    confirm = external_cancel_confirm_keyboard(7)
+    assert "order:cancel_external_confirm:7" in callbacks(confirm)
+    assert "order:open:7" in callbacks(confirm)
