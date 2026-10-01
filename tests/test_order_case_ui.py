@@ -1,5 +1,5 @@
 from app.domain import OrderCase, OrderCaseNote
-from app.ui import order_case_text, operator_case_keyboard, user_case_keyboard
+from app.ui import order_case_text, operator_case_keyboard, operator_cases_keyboard, operator_queue_text, user_case_keyboard
 
 
 def build_case(status="open"):
@@ -66,3 +66,18 @@ def test_case_controls_change_after_resolution():
     operator_resolved = callbacks(operator_case_keyboard(build_case("resolved")))
     assert "ops:assign:5" not in operator_resolved
     assert "ops:resolve:5" not in operator_resolved
+
+
+
+def test_operator_queue_exposes_filters():
+    case = build_case("open")
+    markup = operator_cases_keyboard([case], active_filter="urgent")
+    values = callbacks(markup)
+    assert "ops:filter:all" in values
+    assert "ops:filter:urgent" in values
+    assert "ops:filter:return" in values
+    assert "ops:filter:mine" in values
+    assert "ops:filter:unassigned" in values
+
+    text = operator_queue_text([case], active_filter="all")
+    assert "Кейсов: <b>1</b>" in text
