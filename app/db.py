@@ -1274,7 +1274,11 @@ async def update_order_status(
         )
         if row is None:
             return None
+
         previous = row.status
+        if previous == status:
+            return _to_customer_order(row)
+
         row.status = status
         row.updated_at = datetime.now(timezone.utc)
         session.add(
@@ -1338,9 +1342,22 @@ async def update_supplier_group_checkout(
         if row is None:
             return None
 
+        previous_status = row.status
+        next_mode = checkout_mode if checkout_mode is not None else row.checkout_mode
+        changed = any(
+            (
+                previous_status != status,
+                row.checkout_mode != next_mode,
+                row.external_order_id != external_order_id,
+                row.checkout_url != checkout_url,
+                row.last_error != last_error,
+            )
+        )
+        if not changed:
+            return _to_supplier_group(row)
+
         row.status = status
-        if checkout_mode is not None:
-            row.checkout_mode = checkout_mode
+        row.checkout_mode = next_mode
         row.external_order_id = external_order_id
         row.checkout_url = checkout_url
         row.last_error = last_error
@@ -1351,8 +1368,9 @@ async def update_supplier_group_checkout(
                 order_id=order_id,
                 event_type="supplier_status",
                 message=f"Статус поставщика {row.provider}: {status}",
-                provider=row.provider,
+                from_status=previous_status,
                 to_status=status,
+                provider=row.provider,
             )
         )
         await session.commit()
