@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 from app.config import settings
-from app.domain import FavoritePart, PriceAlert, SearchHistoryItem, Vehicle
+from app.domain import FavoritePart, PriceAlert, SearchHistoryItem, ShoppingListItem, Vehicle
 
 
 class Base(DeclarativeBase):
@@ -60,6 +60,19 @@ class PriceAlertRow(Base):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     triggered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class ShoppingListRow(Base):
+    __tablename__ = "shopping_list"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    telegram_user_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    vehicle_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    brand: Mapped[str] = mapped_column(String(120))
+    article: Mapped[str] = mapped_column(String(120), index=True)
+    title: Mapped[str] = mapped_column(String(250))
+    quantity: Mapped[int] = mapped_column(Integer, default=1)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class GarageVehicleRow(Base):
@@ -613,3 +626,131 @@ async def update_vehicle_from_resolution(
         await session.commit()
         await session.refresh(row)
         return _to_vehicle(row)
+
+
+
+async def add_shopping_item(
+    user_id: int,
+    *,
+    vehicle_id: int | None,
+    brand: str,
+    article: str,
+    title: str,
+    quantity: int = 1,
+) -> ShoppingListItem:
+    qty = max(1, min(quantity, 99))
+    async with Session() as session:
+        row = await session.scalar(
+            select(ShoppingListRow).where(
+                ShoppingListRow.telegram_user_id == user_id,
+                ShoppingListRow.vehicle_id == vehicle_id,
+                ShoppingListRow.brand == brand,
+                ShoppingListRow.article == article,
+            )
+        )
+        if row is None:
+            row = ShoppingListRow(
+                telegram_user_id=user_id,
+                vehicle_id=vehicle_id,
+                brand=brand,
+                article=article,
+                title=title,
+                quantity=qty,
+            )
+            session.add(row)
+        else:
+            row.quantity = min(99, row.quantity + qty)
+            row.title = title
+
+        await session.commit()
+        await session.refresh(row)
+        return ShoppingListItem(
+            id=row.id,
+            telegram_user_id=row.telegram_user_id,
+            vehicle_id=row.vehicle_id,
+            brand=row.brand,
+            article=row.article,
+            title=row.title,
+            quantity=row.quantity,
+        )
+
+
+async def list_shopping_items(user_id: int) -> list[ShoppingListItem]:
+    async with Session() as session:
+        rows = (
+            await session.scalars(
+                select(ShoppingListRow)
+                .where(ShoppingListRow.telegram_user_id == user_id)
+                .order_by(ShoppingListRow.id.asc())
+            )
+        ).all()
+        return [
+            ShoppingListItem(
+                id=row.id,
+                telegram_user_id=row.telegram_user_id,
+                vehicle_id=row.vehicle_id,
+                brand=row.brand,
+                article=row.article,
+                title=row.title,
+                quantity=row.quantity,
+            )
+            for row in rows
+        ]
+
+
+async def change_shopping_quantity(
+    user_id: int,
+    item_id: int,
+    delta: int,
+) -> ShoppingListItem | None:
+    async with Session() as session:
+        row = await session.scalar(
+            select(ShoppingListRow).where(
+                ShoppingListRow.id == item_id,
+                ShoppingListRow.telegram_user_id == user_id,
+            )
+        )
+        if row is None:
+            return None
+
+        row.quantity = max(1, min(99, row.quantity + delta))
+        await session.commit()
+        await session.refresh(row)
+        return ShoppingListItem(
+            id=row.id,
+            telegram_user_id=row.telegram_user_id,
+            vehicle_id=row.vehicle_id,
+            brand=row.brand,
+            article=row.article,
+            title=row.title,
+            quantity=row.quantity,
+        )
+
+
+async def remove_shopping_item(user_id: int, item_id: int) -> bool:
+    async with Session() as session:
+        row = await session.scalar(
+            select(ShoppingListRow).where(
+                ShoppingListRow.id == item_id,
+                ShoppingListRow.telegram_user_id == user_id,
+            )
+        )
+        if row is None:
+            return False
+        await session.delete(row)
+        await session.commit()
+        return True
+
+
+async def clear_shopping_list(user_id: int) -> None:
+    async with Session() as session:
+        rows = (
+            await session.scalars(
+                select(ShoppingListRow).where(
+                    ShoppingListRow.telegram_user_id == user_id
+                )
+            )
+        ).all()
+        for row in rows:
+            await session.delete(row)
+        await session.commit()
