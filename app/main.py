@@ -23,6 +23,8 @@ from app.ui import (
     BTN_MODEL_CATALOG,
     BTN_SEARCH,
     BTN_SERVICE,
+    built_kit_keyboard,
+    built_kit_text,
     cancel_menu,
     catalog_keyboard,
     generation_keyboard,
@@ -32,9 +34,11 @@ from app.ui import (
     part_detail_keyboard,
     parts_results_keyboard,
     results_keyboard,
+    service_kits_keyboard,
     vehicle_summary,
 )
 from app.search_service import PartsSearchService, deserialize_candidate, serialize_candidate
+from app.service_kits import build_service_kit, get_service_kit
 from app.vehicle_catalog import find_generations, get_generation
 from app.vehicle_parser import parse_vehicle_text
 
@@ -432,11 +436,62 @@ async def service_shortcut(message: Message, state: FSMContext):
         vehicle.vin,
         "garage",
     )
-    node = get_node("service")
     await message.answer(
         f"{vehicle_summary(vehicle)}\n\n"
-        f"<b>{escape(node.title)}</b>\nВыберите позицию:",
-        reply_markup=catalog_keyboard("service"),
+        "<b>ТО и обслуживание</b>\n"
+        "Выберите готовый комплект или откройте отдельные позиции:",
+        reply_markup=service_kits_keyboard(),
+    )
+
+
+@dp.callback_query(F.data == "action:kits")
+async def service_kits_callback(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    if callback.message is None:
+        return
+
+    vehicle, _ = await get_catalog_vehicle(state, callback.from_user.id)
+    if vehicle is None:
+        await callback.message.answer("Сначала выберите автомобиль.")
+        return
+
+    await callback.message.edit_text(
+        f"{vehicle_summary(vehicle)}\n\n"
+        "<b>ТО и обслуживание</b>\n"
+        "Выберите комплект:",
+        reply_markup=service_kits_keyboard(),
+    )
+
+
+@dp.callback_query(F.data.startswith("kit:"))
+async def service_kit_callback(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    if callback.message is None:
+        return
+
+    kit_id = (callback.data or "").split(":", 1)[1]
+    kit = get_service_kit(kit_id)
+    if kit is None:
+        await callback.message.answer("Комплект не найден.")
+        return
+
+    vehicle, source = await get_catalog_vehicle(state, callback.from_user.id)
+    if vehicle is None:
+        await callback.message.answer("Сначала выберите автомобиль.")
+        return
+
+    built = await build_service_kit(search_service, vehicle, kit)
+    note = (
+        "Комплект демонстрационный. Совместимость по VIN пока не проверяется."
+        if source == "garage"
+        else "Комплект общий для модели; точную применимость нужно уточнить."
+    )
+
+    await callback.message.edit_text(
+        f"{vehicle_summary(vehicle)}\n\n"
+        f"{built_kit_text(built)}\n\n"
+        f"<i>{escape(note)}</i>",
+        reply_markup=built_kit_keyboard(),
     )
 
 
