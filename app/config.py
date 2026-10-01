@@ -57,6 +57,8 @@ class Settings(BaseSettings):
     price_alert_worker_mode: str = "embedded"
     price_alert_interval_seconds: int = 3600
     price_alert_drop_percent: float = 5.0
+    order_status_monitor_enabled: bool = False
+    order_status_interval_seconds: int = 300
     bot_run_mode: str = "polling"
     webhook_url: str | None = None
     webhook_path: str = "/webhook"
