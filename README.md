@@ -350,6 +350,109 @@ Snapshot не меняется вслед за текущей корзиной �
 
 или кнопкой «📄 Расчёты».
 
+## Заказы и checkout
+
+Расчёт и заказ разделены:
+
+- **расчёт** — snapshot цены и состава;
+- **заказ** — отдельный lifecycle с повторной проверкой наличия, checkout по supplier-группам и audit trail.
+
+Открыть заказы:
+
+```text
+/orders
+```
+
+или кнопкой «📦 Заказы».
+
+Заказ можно создать из текущего плана закупки или сохранённого расчёта. После создания он имеет статус `draft` и ещё ничего не отправляет внешнему поставщику.
+
+Перед оформлением пользователь запускает повторную проверку. Для каждой позиции бот ищет тот же артикул у того же provider и проверяет:
+
+- наличие;
+- актуальную цену;
+- срок;
+- deeplink.
+
+Возможные промежуточные состояния:
+
+```text
+draft
+ready
+price_changed
+needs_attention
+checkout_pending
+awaiting_manual_checkout
+partially_placed
+placed
+completed
+```
+
+Если цена изменилась, заказ переходит в `price_changed`. Пользователь должен отдельно подтвердить новые цены. Если позиция отсутствует, checkout блокируется статусом `needs_attention`.
+
+Только отдельная кнопка «🚀 Перейти к оформлению» запускает checkout. Создание заказа, revalidation и просмотр заказа не создают внешних заказов.
+
+### Checkout adapters
+
+Для provider без order API используется deeplink fallback. Supplier-группа получает `manual_required`, а пользователь переходит в магазин и затем может отметить «Я оформил».
+
+Для provider с B2B/order API есть generic HTTPS adapter:
+
+```env
+CHECKOUT_API_ENABLED=true
+CHECKOUT_API_PROVIDER_NAME=Partner API
+CHECKOUT_API_BASE_URL=https://partner.example.com
+CHECKOUT_API_CREATE_PATH=/orders
+CHECKOUT_API_STATUS_PATH=/orders/{external_order_id}
+CHECKOUT_API_KEY=...
+CHECKOUT_API_TIMEOUT_SECONDS=10
+```
+
+Создание checkout передаёт idempotency key вида:
+
+```text
+zap:<order_id>:<supplier_group_id>
+```
+
+Adapter принимает `external_order_id`, `checkout_url` и provider status. HTTP вызовы ограничены timeout; `external_order_id` безопасно экранируется при подстановке в status URL.
+
+Один пользовательский заказ может одновременно содержать:
+
+- группу, оформленную через API;
+- группу с ручным deeplink;
+- группу, которая требует внимания.
+
+Поэтому статус хранится и на уровне общего заказа, и отдельно по каждому provider.
+
+### Audit trail
+
+В БД сохраняются события:
+
+- создание заказа;
+- revalidation;
+- изменение общего статуса;
+- изменение supplier status;
+- ручное подтверждение оформления.
+
+Повторный polling того же статуса не создаёт дубликаты событий.
+
+### Order status worker
+
+Для внешних API-заказов есть отдельный worker:
+
+```bash
+python -m app.order_worker
+```
+
+Настройки:
+
+```env
+ORDER_STATUS_MONITOR_ENABLED=true
+ORDER_STATUS_INTERVAL_SECONDS=300
+```
+
+Worker проверяет только заказы, в которых есть `external_order_id`, и отправляет Telegram-уведомление только при реальном изменении общего статуса. Ручные deeplink-заказы автоматически не помечаются оформленными.
+
 ## История цены
 
 При пользовательском поиске, открытии каталога и пересчёте закупки бот сохраняет commercial observations для конкретного `provider + brand + article`.
@@ -483,7 +586,7 @@ app/
 ├── main.py               Telegram handlers / orchestration
 ├── ui.py                 reply + inline UI
 ├── runtime.py            polling / webhook
-├── db.py                 SQLite / SQLAlchemy + additive migrations
+├── db.py                 SQLAlchemy persistence / order state
 ├── domain.py             domain models
 ├── vehicle_parser.py     brand/model parsing
 ├── vehicle_catalog.py    generation resolver
@@ -503,11 +606,15 @@ app/
 ├── service_kits.py       service kits
 ├── work_orders.py        work list → parts resolver
 ├── procurement.py        multi-store purchase optimizer
+├── orders.py             order lifecycle / revalidation / checkout orchestration
+├── checkout.py           deeplink + generic HTTPS checkout adapters
 ├── commercial_rules.py   provider-specific delivery rules
 ├── price_history.py      price trend summaries
 ├── price_alerts.py       price monitoring logic
 ├── alert_worker.py       reusable alert worker loop
-├── worker.py             standalone background process
+├── worker.py             standalone price-alert process
+├── order_monitor.py      external order status monitoring
+├── order_worker.py       standalone order-status process
 ├── health.py             DB/Redis readiness
 ├── db_init.py            schema initialization process
 └── observability.py      JSON logging + secret redaction
@@ -517,10 +624,17 @@ app/
 
 Схема теперь управляется Alembic. `init_db()` выполняет `upgrade head`, поэтому одинаковый механизм используется локально, в CI и в `db-init` production-container.
 
-Текущий baseline revision:
+Текущий Alembic head:
 
 ```text
-20261001_0001
+20261001_0002
+```
+
+Revisions:
+
+```text
+20261001_0001  baseline существующей схемы
+20261001_0002  orders / supplier groups / order lines / audit events
 ```
 
 Первый revision сделан idempotent для перехода со старого `create_all`-режима:
@@ -547,8 +661,8 @@ docker compose up -d --build
 ```text
 PostgreSQL ─┐
             ├─ db-init ─→ bot
-Redis ──────┤             │
-            └────────────→ worker
+Redis ──────┤             ├─→ price worker
+            └─────────────└─→ order-status worker
 ```
 
 Запуск:
@@ -566,7 +680,8 @@ docker compose -f docker-compose.prod.yml up -d --build
 - `redis` — общий search cache и rate limiting;
 - `db-init` — инициализирует схему до запуска приложений;
 - `bot` — Telegram polling/webhook процесс;
-- `worker` — независимая проверка price alerts.
+- `worker` — независимая проверка price alerts;
+- `order-worker` — polling внешних order API и уведомления о смене статуса.
 
 Production compose автоматически выставляет:
 
@@ -576,7 +691,7 @@ RATE_LIMIT_BACKEND=redis
 PRICE_ALERT_WORKER_MODE=external
 ```
 
-Поэтому bot и worker используют одинаковый Redis-кэш, но только worker выполняет фоновые price checks.
+Bot и worker-процессы используют общую PostgreSQL/Redis инфраструктуру. Price worker отвечает только за price alerts, order-worker — только за внешние статусы заказов.
 
 ### Redis cache
 
@@ -654,7 +769,7 @@ pytest
 Docker build
 ```
 
-Отдельно проверяются upgrade старой схемы гаража, shopping list, procurement optimizer, work resolver, rate limiting и production-compose topology.
+Отдельно проверяются upgrade старой схемы гаража, Alembic head `0002`, shopping list, procurement optimizer, work resolver, order lifecycle, checkout fallback, rate limiting и production-compose topology.
 
 ## Что пока не production-ready
 
@@ -664,7 +779,7 @@ Docker build
 2. лицензированный production-источник применимости;
 3. credentials и контракт первого настоящего магазина/дистрибьютора;
 4. реальные deeplink/affiliate URL и подтверждённые коммерческие правила поставщиков;
-5. реальные checkout/order API для тех providers, которые разрешат оформление заказа;
+5. credentials и реальные checkout/order API конкретных providers для уже готового adapter-а;
 6. внешние metrics/error reporting и production dashboards.
 
 Следующая рабочая цепочка уже поддержана архитектурой:
@@ -678,5 +793,9 @@ VIN / модель
 → карточка детали
 → список закупки / работы
 → оптимизация по магазинам
-→ price alert / переход в магазин
+→ сохранённый расчёт
+→ order draft
+→ revalidation цены/наличия
+→ API checkout / deeplink
+→ status monitoring
 ```
