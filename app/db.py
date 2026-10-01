@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 from app.config import settings
-from app.domain import CustomerOrder, FavoritePart, Offer, OrderEvent, OrderLine, PriceAlert, PriceHistoryPoint, SavedPurchaseQuote, SearchHistoryItem, ShoppingListItem, SupplierOrderGroup, Vehicle
+from app.domain import CustomerOrder, DeliveryProfile, FavoritePart, Offer, OrderEvent, OrderLine, PriceAlert, PriceHistoryPoint, SavedPurchaseQuote, SearchHistoryItem, ShoppingListItem, SupplierOrderGroup, Vehicle
 
 
 class Base(DeclarativeBase):
@@ -103,6 +103,27 @@ class PriceHistoryRow(Base):
     observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
 
 
+class DeliveryProfileRow(Base):
+    __tablename__ = "delivery_profiles"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    telegram_user_id: Mapped[int] = mapped_column(BigInteger, unique=True, index=True)
+    full_name: Mapped[str] = mapped_column(String(160))
+    phone: Mapped[str] = mapped_column(String(40))
+    email: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    country: Mapped[str] = mapped_column(String(100))
+    city: Mapped[str] = mapped_column(String(120))
+    address_line1: Mapped[str] = mapped_column(String(250))
+    address_line2: Mapped[str | None] = mapped_column(String(250), nullable=True)
+    postal_code: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    comment: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+
 class CustomerOrderRow(Base):
     __tablename__ = "orders"
 
@@ -110,6 +131,8 @@ class CustomerOrderRow(Base):
     telegram_user_id: Mapped[int] = mapped_column(BigInteger, index=True)
     vehicle_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     source_quote_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    delivery_profile_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    delivery_snapshot_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(String(40), default="draft", index=True)
     item_total: Mapped[Decimal] = mapped_column(Numeric(12, 2))
     shipping_total: Mapped[Decimal] = mapped_column(Numeric(12, 2))
@@ -1042,6 +1065,12 @@ def _to_customer_order(row: CustomerOrderRow) -> CustomerOrder:
         telegram_user_id=row.telegram_user_id,
         vehicle_id=row.vehicle_id,
         source_quote_id=row.source_quote_id,
+        delivery_profile_id=row.delivery_profile_id,
+        delivery_snapshot=(
+            json.loads(row.delivery_snapshot_json)
+            if row.delivery_snapshot_json
+            else None
+        ),
         status=row.status,
         item_total=Decimal(str(row.item_total)),
         shipping_total=Decimal(str(row.shipping_total)),
@@ -1104,7 +1133,9 @@ async def create_customer_order(
     *,
     vehicle_id: int | None,
     source_quote_id: int | None,
-    item_total,
+    delivery_profile_id: int | None = None,
+    delivery_snapshot: dict | None = None,
+    item_total=None,
     shipping_total,
     grand_total,
     groups: list[dict],
@@ -1114,6 +1145,12 @@ async def create_customer_order(
             telegram_user_id=user_id,
             vehicle_id=vehicle_id,
             source_quote_id=source_quote_id,
+            delivery_profile_id=delivery_profile_id,
+            delivery_snapshot_json=(
+                json.dumps(delivery_snapshot, ensure_ascii=False, separators=(",", ":"))
+                if delivery_snapshot
+                else None
+            ),
             status="draft",
             item_total=Decimal(str(item_total)),
             shipping_total=Decimal(str(shipping_total)),
@@ -1455,3 +1492,124 @@ async def list_orders_for_status_monitor(
             )
         ).all()
         return [_to_customer_order(row) for row in rows]
+
+
+
+def _to_delivery_profile(row: DeliveryProfileRow) -> DeliveryProfile:
+    return DeliveryProfile(
+        id=row.id,
+        telegram_user_id=row.telegram_user_id,
+        full_name=row.full_name,
+        phone=row.phone,
+        email=row.email,
+        country=row.country,
+        city=row.city,
+        address_line1=row.address_line1,
+        address_line2=row.address_line2,
+        postal_code=row.postal_code,
+        comment=row.comment,
+        updated_at=row.updated_at.isoformat() if row.updated_at else None,
+    )
+
+
+async def get_delivery_profile(user_id: int) -> DeliveryProfile | None:
+    async with Session() as session:
+        row = await session.scalar(
+            select(DeliveryProfileRow).where(
+                DeliveryProfileRow.telegram_user_id == user_id
+            )
+        )
+        return None if row is None else _to_delivery_profile(row)
+
+
+async def save_delivery_profile(
+    user_id: int,
+    *,
+    full_name: str,
+    phone: str,
+    country: str,
+    city: str,
+    address_line1: str,
+    email: str | None = None,
+    address_line2: str | None = None,
+    postal_code: str | None = None,
+    comment: str | None = None,
+) -> DeliveryProfile:
+    async with Session() as session:
+        row = await session.scalar(
+            select(DeliveryProfileRow).where(
+                DeliveryProfileRow.telegram_user_id == user_id
+            )
+        )
+        if row is None:
+            row = DeliveryProfileRow(telegram_user_id=user_id)
+            session.add(row)
+
+        row.full_name = full_name[:160]
+        row.phone = phone[:40]
+        row.email = email[:200] if email else None
+        row.country = country[:100]
+        row.city = city[:120]
+        row.address_line1 = address_line1[:250]
+        row.address_line2 = address_line2[:250] if address_line2 else None
+        row.postal_code = postal_code[:40] if postal_code else None
+        row.comment = comment[:500] if comment else None
+        row.updated_at = datetime.now(timezone.utc)
+
+        await session.commit()
+        await session.refresh(row)
+        return _to_delivery_profile(row)
+
+
+async def delete_delivery_profile(user_id: int) -> bool:
+    async with Session() as session:
+        row = await session.scalar(
+            select(DeliveryProfileRow).where(
+                DeliveryProfileRow.telegram_user_id == user_id
+            )
+        )
+        if row is None:
+            return False
+        await session.delete(row)
+        await session.commit()
+        return True
+
+
+async def attach_delivery_snapshot_to_order(
+    user_id: int,
+    order_id: int,
+    *,
+    delivery_profile_id: int,
+    snapshot: dict,
+) -> CustomerOrder | None:
+    async with Session() as session:
+        row = await session.scalar(
+            select(CustomerOrderRow).where(
+                CustomerOrderRow.id == order_id,
+                CustomerOrderRow.telegram_user_id == user_id,
+            )
+        )
+        if row is None:
+            return None
+
+        if row.status not in {"draft", "ready", "price_changed", "needs_attention"}:
+            return _to_customer_order(row)
+
+        row.delivery_profile_id = delivery_profile_id
+        row.delivery_snapshot_json = json.dumps(
+            snapshot,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        row.updated_at = datetime.now(timezone.utc)
+        session.add(
+            OrderEventRow(
+                order_id=order_id,
+                event_type="delivery_snapshot",
+                message="Данные получателя и доставки сохранены в заказе.",
+                to_status=row.status,
+            )
+        )
+        await session.commit()
+        await session.refresh(row)
+        return _to_customer_order(row)
