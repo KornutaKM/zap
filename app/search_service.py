@@ -1,11 +1,31 @@
 import asyncio
 import time
 
-from dataclasses import replace
+from dataclasses import dataclass, replace
 
 from app.domain import Offer, PartCandidate, Vehicle, group_offers, rank_parts
 from app.fitment import FitmentCatalog, FitmentResolution
 from app.providers import PartsProvider
+
+
+@dataclass(slots=True)
+class ProviderHealth:
+    name: str
+    calls: int = 0
+    successes: int = 0
+    failures: int = 0
+    consecutive_failures: int = 0
+    circuit_open_until: float = 0.0
+    last_latency_ms: float | None = None
+    last_error: str | None = None
+
+    def state(self, now: float | None = None) -> str:
+        current = time.monotonic() if now is None else now
+        if self.circuit_open_until > current:
+            return "open"
+        if self.consecutive_failures > 0:
+            return "degraded"
+        return "healthy"
 
 
 class PartsSearchService:
@@ -15,12 +35,20 @@ class PartsSearchService:
         cache_ttl_seconds: float = 60.0,
         provider_timeout_seconds: float = 5.0,
         fitment_catalog: FitmentCatalog | None = None,
+        circuit_failure_threshold: int = 3,
+        circuit_cooldown_seconds: float = 60.0,
     ) -> None:
         self.providers = providers
         self.cache_ttl_seconds = cache_ttl_seconds
         self.provider_timeout_seconds = provider_timeout_seconds
         self.fitment_catalog = fitment_catalog
+        self.circuit_failure_threshold = max(1, circuit_failure_threshold)
+        self.circuit_cooldown_seconds = max(1.0, circuit_cooldown_seconds)
         self._cache: dict[tuple, tuple[float, tuple[Offer, ...]]] = {}
+        self._provider_health: dict[int, ProviderHealth] = {
+            id(provider): ProviderHealth(name=provider.name)
+            for provider in providers
+        }
 
     @staticmethod
     def _cache_key(vehicle: Vehicle | None, query: str) -> tuple:
@@ -38,13 +66,36 @@ class PartsSearchService:
         vehicle: Vehicle,
         query: str,
     ) -> list[Offer]:
+        health = self._provider_health[id(provider)]
+        now = time.monotonic()
+        if health.circuit_open_until > now:
+            return []
+
+        health.calls += 1
+        started = time.monotonic()
         try:
-            return await asyncio.wait_for(
+            result = await asyncio.wait_for(
                 provider.search(vehicle, query),
                 timeout=self.provider_timeout_seconds,
             )
-        except Exception:
+        except Exception as exc:
+            health.failures += 1
+            health.consecutive_failures += 1
+            health.last_error = type(exc).__name__
+            health.last_latency_ms = (time.monotonic() - started) * 1000
+
+            if health.consecutive_failures >= self.circuit_failure_threshold:
+                health.circuit_open_until = (
+                    time.monotonic() + self.circuit_cooldown_seconds
+                )
             return []
+
+        health.successes += 1
+        health.consecutive_failures = 0
+        health.circuit_open_until = 0.0
+        health.last_error = None
+        health.last_latency_ms = (time.monotonic() - started) * 1000
+        return result
 
     async def raw_offers(self, vehicle: Vehicle | None, query: str) -> list[Offer]:
         key = self._cache_key(vehicle, query)
@@ -124,6 +175,31 @@ class PartsSearchService:
 
     def clear_cache(self) -> None:
         self._cache.clear()
+
+    def provider_statuses(self) -> list[dict[str, object]]:
+        now = time.monotonic()
+        rows = []
+        for provider in self.providers:
+            health = self._provider_health[id(provider)]
+            retry_after = max(0.0, health.circuit_open_until - now)
+            rows.append(
+                {
+                    "name": health.name,
+                    "state": health.state(now),
+                    "calls": health.calls,
+                    "successes": health.successes,
+                    "failures": health.failures,
+                    "consecutive_failures": health.consecutive_failures,
+                    "retry_after_seconds": round(retry_after, 1),
+                    "last_latency_ms": (
+                        round(health.last_latency_ms, 1)
+                        if health.last_latency_ms is not None
+                        else None
+                    ),
+                    "last_error": health.last_error,
+                }
+            )
+        return rows
 
 
 def serialize_candidate(candidate: PartCandidate) -> dict:
