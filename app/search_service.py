@@ -38,7 +38,7 @@ class PartsSearchService:
                 provider.search(vehicle, query),
                 timeout=self.provider_timeout_seconds,
             )
-        except (TimeoutError, Exception):
+        except Exception:
             return []
 
     async def raw_offers(self, vehicle: Vehicle | None, query: str) -> list[Offer]:
