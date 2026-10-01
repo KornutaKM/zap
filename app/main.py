@@ -25,11 +25,13 @@ from app.ui import (
     BTN_SERVICE,
     cancel_menu,
     catalog_keyboard,
+    generation_keyboard,
     main_menu,
     offer_text,
     results_keyboard,
     vehicle_summary,
 )
+from app.vehicle_catalog import find_generations, get_generation
 from app.vehicle_parser import parse_vehicle_text
 
 
@@ -120,6 +122,26 @@ async def show_catalog_root(
         f"<i>{note}</i>",
         reply_markup=main_menu(source == "garage"),
     )
+
+
+async def open_model_catalog(
+    message: Message,
+    state: FSMContext,
+    brand: str,
+    model: str,
+) -> None:
+    generations = find_generations(brand, model)
+    await state.clear()
+
+    if len(generations) > 1:
+        await message.answer(
+            f"Нашёл несколько поколений <b>{escape(brand)} {escape(model)}</b>.\n"
+            "Выберите нужное:",
+            reply_markup=generation_keyboard(generations),
+        )
+        return
+
+    await show_catalog_root(message, state, brand, model, None, None, "temporary")
 
 
 async def open_catalog_for_saved_vehicle(message: Message, state: FSMContext) -> None:
@@ -345,7 +367,7 @@ async def catalog_command(message: Message, state: FSMContext):
             )
             return
         brand, model = parsed
-        await show_catalog_root(message, state, brand, model, None, None, "temporary")
+        await open_model_catalog(message, state, brand, model)
         return
 
     await open_catalog_for_saved_vehicle(message, state)
@@ -372,8 +394,7 @@ async def catalog_vehicle_input(message: Message, state: FSMContext):
         return
 
     brand, model = parsed
-    await state.clear()
-    await show_catalog_root(message, state, brand, model, None, None, "temporary")
+    await open_model_catalog(message, state, brand, model)
 
 
 @dp.message(F.text == BTN_SERVICE)
@@ -438,6 +459,30 @@ async def callback_new_search(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
     if callback.message:
         await start_search(callback.message, state, user_id=callback.from_user.id)
+
+
+@dp.callback_query(F.data.startswith("vehgen:"))
+async def vehicle_generation_callback(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    if callback.message is None:
+        return
+
+    key = (callback.data or "").split(":", 1)[1]
+    generation = get_generation(key)
+    if generation is None:
+        await callback.message.answer("Поколение автомобиля не найдено.")
+        return
+
+    await state.clear()
+    await show_catalog_root(
+        callback.message,
+        state,
+        generation.brand,
+        generation.display_model,
+        None,
+        None,
+        "temporary",
+    )
 
 
 @dp.callback_query(F.data.startswith("cat:"))
@@ -509,9 +554,8 @@ async def free_text(message: Message, state: FSMContext):
 
     parsed_vehicle = parse_vehicle_text(text)
     if parsed_vehicle is not None:
-        await state.clear()
         brand, model = parsed_vehicle
-        await show_catalog_root(message, state, brand, model, None, None, "temporary")
+        await open_model_catalog(message, state, brand, model)
         return
 
     vehicle, source = await get_catalog_vehicle(state, message.from_user.id)
