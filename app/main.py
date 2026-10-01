@@ -1011,6 +1011,7 @@ async def price_alerts_button(message: Message):
 
 @dp.callback_query(F.data.startswith("alert:add:"))
 async def price_alert_add_callback(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
     if callback.message is None:
         return
 
@@ -1022,9 +1023,43 @@ async def price_alert_add_callback(callback: CallbackQuery, state: FSMContext):
         return
 
     candidate = deserialize_candidate(items[index])
+    current = f"{candidate.min_price:,.0f}".replace(",", " ")
+    await callback.message.answer(
+        f"<b>{escape(candidate.brand)} · "
+        f"<code>{escape(candidate.article)}</code></b>\n"
+        f"Текущая минимальная цена: <b>{current} ₽</b>\n\n"
+        "При каком снижении сообщить?",
+        reply_markup=price_alert_target_keyboard(index),
+    )
+
+
+@dp.callback_query(F.data.startswith("alert:set:"))
+async def price_alert_set_callback(callback: CallbackQuery, state: FSMContext):
+    if callback.message is None:
+        return
+
+    parts = (callback.data or "").split(":")
+    if len(parts) != 4:
+        await callback.answer("Некорректный порог", show_alert=True)
+        return
+
+    try:
+        index = int(parts[2])
+        drop_percent = Decimal(parts[3])
+    except (ValueError, ArithmeticError):
+        await callback.answer("Некорректный порог", show_alert=True)
+        return
+
+    data = await state.get_data()
+    items = data.get("last_parts") or []
+    if index < 0 or index >= len(items):
+        await callback.answer("Эта выдача устарела", show_alert=True)
+        return
+
+    candidate = deserialize_candidate(items[index])
     vehicle, _ = await get_catalog_vehicle(state, callback.from_user.id)
     current_price = candidate.min_price
-    drop = Decimal(str(app_settings.price_alert_drop_percent)) / Decimal("100")
+    drop = drop_percent / Decimal("100")
     target_price = (current_price * (Decimal("1") - drop)).quantize(Decimal("1"))
 
     alert = await create_price_alert(
@@ -1037,9 +1072,11 @@ async def price_alert_add_callback(callback: CallbackQuery, state: FSMContext):
         last_price=current_price,
     )
     target = f"{alert.target_price:,.0f}".replace(",", " ")
-    await callback.answer(
-        f"Сообщу при цене ≤ {target} ₽",
-        show_alert=True,
+    await callback.answer("Уведомление создано")
+    await callback.message.edit_text(
+        f"🔔 Буду следить за <b>{escape(candidate.brand)}</b> "
+        f"<code>{escape(candidate.article)}</code>.\n"
+        f"Сообщу при цене ≤ <b>{target} ₽</b>."
     )
 
 
@@ -1273,21 +1310,15 @@ async def part_list_back_callback(callback: CallbackQuery, state: FSMContext):
     candidates = [deserialize_candidate(item) for item in raw_items]
     query = data.get("last_query") or "запчасть"
     parent_id = data.get("last_parent_id")
-    vehicle_data = data.get("last_vehicle")
+    vehicle = vehicle_from_state(data.get("last_vehicle"))
     note = data.get("last_compatibility_note") or "Данные и цены пока демонстрационные."
-
-    vehicle = None
-    if vehicle_data:
-        vehicle = Vehicle(
-            vehicle_data["brand"],
-            vehicle_data["model"],
-            vehicle_data["year"],
-            vehicle_data.get("vin"),
-        )
+    page = int(data.get("last_page") or 0)
+    total_count = len(data.get("last_parts_recommended") or raw_items)
+    start = page * 5
 
     vehicle_block = f"{vehicle_summary(vehicle)}\n\n" if vehicle else ""
     body = "\n\n".join(
-        candidate_text(index + 1, candidate)
+        candidate_text(start + index + 1, candidate)
         for index, candidate in enumerate(candidates)
     )
 
@@ -1296,7 +1327,12 @@ async def part_list_back_callback(callback: CallbackQuery, state: FSMContext):
         f"Запрос: <b>{escape(query)}</b>\n\n"
         f"{body}\n\n"
         f"<i>{escape(note)}</i>",
-        reply_markup=parts_results_keyboard(candidates, parent_id),
+        reply_markup=parts_results_keyboard(
+            candidates,
+            parent_id,
+            page=page,
+            total_count=total_count,
+        ),
     )
 
 
@@ -1382,19 +1418,18 @@ async def catalog_callback(callback: CallbackQuery, state: FSMContext):
         )
         return
 
-    visible = candidates[:5]
+    stored = candidates[:20]
+    visible = stored[:5]
     await state.update_data(
         last_parts=[serialize_candidate(item) for item in visible],
-        last_parts_recommended=[serialize_candidate(item) for item in visible],
+        last_parts_recommended=[serialize_candidate(item) for item in stored],
         last_query=node.query,
         last_parent_id=node.parent,
-        last_vehicle={
-            "brand": vehicle.brand,
-            "model": vehicle.model,
-            "year": vehicle.year,
-            "vin": vehicle.vin,
-        },
+        last_vehicle=vehicle_state_payload(vehicle),
         last_compatibility_note=compatibility_note,
+        last_sort_mode="recommended",
+        last_page=0,
+        last_total_found=len(candidates),
     )
 
     body = "\n\n".join(
@@ -1408,7 +1443,12 @@ async def catalog_callback(callback: CallbackQuery, state: FSMContext):
         f"Категория: <b>{escape(node.title)}</b>\n\n"
         f"{body}\n\n"
         f"<i>{escape(compatibility_note)}</i>",
-        reply_markup=parts_results_keyboard(visible, node.parent),
+        reply_markup=parts_results_keyboard(
+            visible,
+            node.parent,
+            page=0,
+            total_count=len(stored),
+        ),
     )
 
 
