@@ -566,3 +566,49 @@ async def mark_manual_group_placed(
         target,
         message=message,
     )
+
+
+
+async def cancel_local_order(
+    user_id: int,
+    order_id: int,
+) -> CustomerOrder | None:
+    loaded = await get_customer_order(user_id, order_id)
+    if loaded is None:
+        return None
+
+    order, groups, _, _ = loaded
+    if order.status in {"cancelled", "completed"}:
+        return order
+
+    externally_started = any(
+        group.external_order_id
+        or group.status in {
+            "manual_required",
+            "pending",
+            "placed",
+            "confirmed",
+            "completed",
+        }
+        for group in groups
+    )
+    if externally_started:
+        return order
+
+    for group in groups:
+        await update_supplier_group_checkout(
+            order_id,
+            group.id,
+            status="cancelled",
+            checkout_mode=group.checkout_mode,
+            external_order_id=group.external_order_id,
+            checkout_url=group.checkout_url,
+            last_error=None,
+        )
+
+    return await update_order_status(
+        user_id,
+        order_id,
+        "cancelled",
+        message="Локальный заказ отменён до начала внешнего checkout.",
+    )
