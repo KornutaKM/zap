@@ -1,7 +1,10 @@
 import asyncio
 import time
 
+from dataclasses import replace
+
 from app.domain import Offer, PartCandidate, Vehicle, group_offers, rank_parts
+from app.fitment import FitmentCatalog, FitmentResolution
 from app.providers import PartsProvider
 
 
@@ -11,10 +14,12 @@ class PartsSearchService:
         providers: list[PartsProvider],
         cache_ttl_seconds: float = 60.0,
         provider_timeout_seconds: float = 5.0,
+        fitment_catalog: FitmentCatalog | None = None,
     ) -> None:
         self.providers = providers
         self.cache_ttl_seconds = cache_ttl_seconds
         self.provider_timeout_seconds = provider_timeout_seconds
+        self.fitment_catalog = fitment_catalog
         self._cache: dict[tuple, tuple[float, tuple[Offer, ...]]] = {}
 
     @staticmethod
@@ -65,7 +70,57 @@ class PartsSearchService:
 
     async def parts(self, vehicle: Vehicle | None, query: str) -> list[PartCandidate]:
         offers = await self.raw_offers(vehicle, query)
-        return rank_parts(group_offers(offers))
+        candidates = rank_parts(group_offers(offers))
+        if not candidates or self.fitment_catalog is None:
+            return candidates
+
+        resolution = await self.fitment_catalog.resolve(vehicle, query)
+        return self._apply_fitment(candidates, resolution)
+
+    @staticmethod
+    def _apply_fitment(
+        candidates: list[PartCandidate],
+        resolution: FitmentResolution,
+    ) -> list[PartCandidate]:
+        cross_keys = {
+            (item.brand.casefold(), item.article.casefold())
+            for item in resolution.crosses
+        }
+
+        enriched = []
+        for candidate in candidates:
+            key = (candidate.brand.casefold(), candidate.article.casefold())
+            if key in cross_keys:
+                enriched.append(
+                    replace(
+                        candidate,
+                        fitment_status=resolution.status,
+                        oe_numbers=resolution.oe_numbers,
+                        fitment_reason=resolution.reason,
+                    )
+                )
+            else:
+                enriched.append(
+                    replace(
+                        candidate,
+                        fitment_status="unverified",
+                        oe_numbers=resolution.oe_numbers if resolution.status != "unverified" else (),
+                        fitment_reason=(
+                            "Артикул не найден среди cross-reference для выбранной применимости."
+                            if resolution.status != "unverified"
+                            else resolution.reason
+                        ),
+                    )
+                )
+
+        status_rank = {"confirmed": 0, "probable": 1, "unverified": 2}
+        return sorted(
+            enriched,
+            key=lambda item: (
+                status_rank.get(item.fitment_status, 3),
+                item.min_price,
+            ),
+        )
 
     def clear_cache(self) -> None:
         self._cache.clear()
@@ -77,6 +132,9 @@ def serialize_candidate(candidate: PartCandidate) -> dict:
         "article": candidate.article,
         "title": candidate.title,
         "quality": candidate.quality,
+        "fitment_status": candidate.fitment_status,
+        "oe_numbers": list(candidate.oe_numbers),
+        "fitment_reason": candidate.fitment_reason,
         "offers": [
             {
                 "provider": offer.provider,
@@ -117,4 +175,7 @@ def deserialize_candidate(data: dict) -> PartCandidate:
         title=data["title"],
         quality=data["quality"],
         offers=offers,
+        fitment_status=data.get("fitment_status", "unverified"),
+        oe_numbers=tuple(data.get("oe_numbers", ())),
+        fitment_reason=data.get("fitment_reason", ""),
     )
