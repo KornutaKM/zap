@@ -16,6 +16,9 @@ class Settings(BaseSettings):
     external_provider_api_key_header: str = "Authorization"
     external_provider_auth_scheme: str = "Bearer"
     external_provider_allow_http: bool = False
+    price_alerts_enabled: bool = True
+    price_alert_interval_seconds: int = 3600
+    price_alert_drop_percent: float = 5.0
 
     model_config = SettingsConfigDict(
         env_file=".env",
