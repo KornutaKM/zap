@@ -11,7 +11,7 @@ from aiogram.types import BotCommand, Message
 
 from app.catalog import get_node
 from app.config import settings
-from app.db import get_vehicle, init_db, save_vehicle
+from app.db import delete_vehicle, get_vehicle, init_db, list_vehicles, save_vehicle, set_active_vehicle
 from app.domain import Vehicle
 from app.providers import AutodocProvider, ExistProvider, MockProvider
 from app.ui import (
@@ -27,6 +27,8 @@ from app.ui import (
     built_kit_text,
     cancel_menu,
     catalog_keyboard,
+    delete_vehicle_confirm_keyboard,
+    garage_keyboard,
     generation_keyboard,
     main_menu,
     candidate_detail_text,
@@ -287,19 +289,105 @@ async def cancel(message: Message, state: FSMContext):
 @dp.message(Command("garage"))
 @dp.message(F.text == BTN_GARAGE)
 async def garage(message: Message, state: FSMContext):
+    vehicles = await list_vehicles(message.from_user.id)
     current = await get_vehicle(message.from_user.id)
-    if current:
-        vin = f"…{current.vin[-4:]}" if current.vin else "не указан"
+
+    if vehicles and current:
         await message.answer(
-            f"{vehicle_summary(current)}\n"
-            f"VIN: <code>{escape(vin)}</code>\n\n"
-            "Чтобы заменить автомобиль, используйте /garage_add.",
-            reply_markup=main_menu(True),
+            "<b>Мои автомобили</b>\n"
+            "Активный автомобиль отмечен галочкой. Выберите другой или добавьте новый.",
+            reply_markup=garage_keyboard(vehicles, current.id),
         )
         return
 
     await state.set_state(Garage.brand)
     await message.answer("Марка автомобиля? Например: <code>BMW</code>", reply_markup=cancel_menu())
+
+
+@dp.callback_query(F.data == "garage:add")
+async def garage_add_callback(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    if callback.message is None:
+        return
+    await state.clear()
+    await state.set_state(Garage.brand)
+    await callback.message.answer(
+        "Марка нового автомобиля? Например: <code>BMW</code>",
+        reply_markup=cancel_menu(),
+    )
+
+
+@dp.callback_query(F.data.startswith("garage:set:"))
+async def garage_set_callback(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    if callback.message is None:
+        return
+
+    vehicle_id = int((callback.data or "").rsplit(":", 1)[1])
+    vehicle = await set_active_vehicle(callback.from_user.id, vehicle_id)
+    if vehicle is None:
+        await callback.message.answer("Автомобиль не найден.")
+        return
+
+    await state.clear()
+    vehicles = await list_vehicles(callback.from_user.id)
+    await callback.message.edit_text(
+        f"Активный автомобиль:\n{vehicle_summary(vehicle)}",
+        reply_markup=garage_keyboard(vehicles, vehicle.id),
+    )
+
+
+@dp.callback_query(F.data.startswith("garage:delete:"))
+async def garage_delete_callback(callback: CallbackQuery):
+    await callback.answer()
+    if callback.message is None:
+        return
+
+    vehicle_id = int((callback.data or "").rsplit(":", 1)[1])
+    await callback.message.edit_text(
+        "Удалить активный автомобиль из гаража?",
+        reply_markup=delete_vehicle_confirm_keyboard(vehicle_id),
+    )
+
+
+@dp.callback_query(F.data.startswith("garage:confirmdel:"))
+async def garage_confirm_delete_callback(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    if callback.message is None:
+        return
+
+    vehicle_id = int((callback.data or "").rsplit(":", 1)[1])
+    await delete_vehicle(callback.from_user.id, vehicle_id)
+    await state.clear()
+
+    vehicles = await list_vehicles(callback.from_user.id)
+    current = await get_vehicle(callback.from_user.id)
+    if not vehicles or current is None:
+        await callback.message.edit_text("Гараж пуст.")
+        await callback.message.answer(
+            "Можно добавить автомобиль.",
+            reply_markup=main_menu(False),
+        )
+        return
+
+    await callback.message.edit_text(
+        "<b>Мои автомобили</b>\nВыберите активный автомобиль:",
+        reply_markup=garage_keyboard(vehicles, current.id),
+    )
+
+
+@dp.callback_query(F.data == "garage:canceldelete")
+async def garage_cancel_delete_callback(callback: CallbackQuery):
+    await callback.answer()
+    if callback.message is None:
+        return
+
+    vehicles = await list_vehicles(callback.from_user.id)
+    current = await get_vehicle(callback.from_user.id)
+    await callback.message.edit_text(
+        "<b>Мои автомобили</b>\nВыберите активный автомобиль:",
+        reply_markup=garage_keyboard(vehicles, current.id if current else None),
+    )
 
 
 @dp.message(Command("garage_add"))
