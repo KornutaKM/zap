@@ -1133,12 +1133,12 @@ async def create_customer_order(
     *,
     vehicle_id: int | None,
     source_quote_id: int | None,
-    delivery_profile_id: int | None = None,
-    delivery_snapshot: dict | None = None,
-    item_total=None,
+    item_total,
     shipping_total,
     grand_total,
     groups: list[dict],
+    delivery_profile_id: int | None = None,
+    delivery_snapshot: dict | None = None,
 ) -> CustomerOrder:
     async with Session() as session:
         order = CustomerOrderRow(
