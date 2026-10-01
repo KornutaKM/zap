@@ -12,7 +12,7 @@ from decimal import Decimal
 
 from app.checkout import CheckoutRegistry
 from app.db import get_customer_order, init_db
-from app.domain import Offer, PartCandidate
+from app.domain import DeliveryProfile, Offer, PartCandidate
 from app.orders import (
     checkout_ready_order,
     create_order_from_plan,
@@ -36,6 +36,20 @@ class FakeSearch:
             in_stock=True,
         )
         return [PartCandidate("ATE", "123", "Pads", .9, (offer,))]
+
+
+def delivery_profile():
+    return DeliveryProfile(
+        id=1,
+        telegram_user_id=42,
+        full_name="Иван Иванов",
+        phone="+79991234567",
+        email="ivan@example.com",
+        country="Россия",
+        city="Москва",
+        address_line1="ул. Примерная, 1",
+        postal_code="101000",
+    )
 
 
 async def main():
@@ -69,6 +83,7 @@ async def main():
         vehicle_id=None,
         shipping_fee=Decimal("500"),
         free_threshold=Decimal("999999"),
+        delivery_profile=delivery_profile(),
     )
     assert order.status == "draft"
 
