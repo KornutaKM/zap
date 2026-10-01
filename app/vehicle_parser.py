@@ -3,7 +3,7 @@ KNOWN_BRANDS = {
     "hyundai", "jeep", "kia", "lada", "lexus", "mazda", "mercedes",
     "mercedes-benz", "mitsubishi", "nissan", "opel", "peugeot", "porsche",
     "renault", "skoda", "subaru", "suzuki", "tesla", "toyota", "volkswagen",
-    "volvo", "ваз", "газ", "москвич", "chery", "exeed", "omoda", "jetour",
+    "volvo", "vw", "ваз", "газ", "москвич", "chery", "exeed", "omoda", "jetour",
 }
 
 MULTIWORD_BRANDS = {
