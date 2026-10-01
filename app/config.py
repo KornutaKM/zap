@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     rate_limit_window_seconds: int = 60
     procurement_shipping_fee: Decimal = Decimal("500")
     procurement_free_shipping_threshold: Decimal = Decimal("10000")
+    procurement_provider_rules_json: str | None = None
     external_provider_enabled: bool = False
     external_provider_name: str = "Partner API"
     external_provider_base_url: str | None = None
