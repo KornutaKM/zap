@@ -38,6 +38,7 @@ class Settings(BaseSettings):
     vehicle_api_auth_scheme: str = "Bearer"
     vehicle_api_allow_http: bool = False
     price_alerts_enabled: bool = True
+    price_alert_worker_mode: str = "embedded"
     price_alert_interval_seconds: int = 3600
     price_alert_drop_percent: float = 5.0
     bot_run_mode: str = "polling"
