@@ -118,6 +118,8 @@ search_service = PartsSearchService(
     cache_ttl_seconds=app_settings.search_cache_ttl_seconds,
     provider_timeout_seconds=app_settings.provider_timeout_seconds,
     fitment_catalog=fitment_catalog,
+    circuit_failure_threshold=app_settings.provider_circuit_failure_threshold,
+    circuit_cooldown_seconds=app_settings.provider_circuit_cooldown_seconds,
 )
 
 vehicle_resolver = NullVehicleResolver()
@@ -366,6 +368,29 @@ async def start_search(
         else "Что нужно найти?\nНапример: <code>передние колодки</code> или <code>масляный фильтр</code>"
     )
     await message.answer(prompt, reply_markup=cancel_menu())
+
+
+@dp.message(Command("status"))
+async def provider_status_command(message: Message):
+    icons = {
+        "healthy": "✅",
+        "degraded": "🟡",
+        "open": "🔴",
+    }
+    lines = ["<b>Статус источников</b>", ""]
+    for item in search_service.provider_statuses():
+        state = str(item["state"])
+        latency = item["last_latency_ms"]
+        latency_text = f"{latency} мс" if latency is not None else "нет данных"
+        retry = item["retry_after_seconds"]
+        retry_text = f" · retry {retry} сек." if state == "open" else ""
+        lines.append(
+            f"{icons.get(state, '⚪')} <b>{escape(str(item['name']))}</b> — "
+            f"{escape(state)} · {latency_text}{retry_text}\n"
+            f"успехов {item['successes']} · ошибок {item['failures']}"
+        )
+
+    await message.answer("\n".join(lines))
 
 
 @dp.message(CommandStart())
@@ -1370,6 +1395,7 @@ async def main():
             BotCommand(command="search", description="Найти запчасть"),
             BotCommand(command="garage", description="Мой автомобиль"),
             BotCommand(command="garage_add", description="Добавить автомобиль"),
+            BotCommand(command="status", description="Статус источников"),
         ]
     )
     alert_task = None
