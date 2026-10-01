@@ -351,15 +351,18 @@ PRICE_ALERT_DROP_PERCENT=5
 
 Позиции комплекта ищутся параллельно. Бот показывает состав, ориентировочную общую стоимость и максимальный срок.
 
-## История и избранное
+## История, избранное и пользовательское состояние
 
-SQLite хранит:
+Локально состояние хранится в SQLite, production-compose использует PostgreSQL.
+
+В БД сохраняются:
 
 - последние запросы;
 - избранные артикулы;
 - несколько автомобилей;
-- выбранную модификацию;
-- price alerts.
+- выбранная модификация;
+- price alerts;
+- постоянный список закупки и количество позиций.
 
 Из истории и избранного можно повторно запустить поиск и получить свежие предложения.
 
@@ -575,13 +578,16 @@ GitHub Actions выполняет:
 
 ```text
 compileall
-import smoke test
-clean database smoke test
+import smoke
+SQLite schema smoke
+PostgreSQL schema smoke
+Redis cache roundtrip
+production bootstrap
 pytest
 Docker build
 ```
 
-Отдельным тестом проверяется upgrade старой схемы гаража.
+Отдельно проверяются upgrade старой схемы гаража, shopping list, procurement optimizer, work resolver, rate limiting и production-compose topology.
 
 ## Что пока не production-ready
 
@@ -590,8 +596,8 @@ Docker build
 1. credentials и контракт реального VIN/vehicle catalog для уже готового adapter-а;
 2. лицензированный production-источник применимости;
 3. credentials и контракт первого настоящего магазина/дистрибьютора;
-4. реальные deeplink/affiliate URL;
-5. PostgreSQL/Redis при росте нагрузки;
+4. реальные deeplink/affiliate URL и подтверждённые правила доставки поставщиков;
+5. полноценные миграции схемы через Alembic вместо текущего bootstrap/create_all;
 6. внешние metrics/error reporting и production dashboards.
 
 Следующая рабочая цепочка уже поддержана архитектурой:
@@ -603,5 +609,7 @@ VIN / модель
 → fitment status
 → цены и наличие нескольких providers
 → карточка детали
+→ список закупки / работы
+→ оптимизация по магазинам
 → price alert / переход в магазин
 ```
