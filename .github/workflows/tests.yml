@@ -8,23 +8,99 @@ on:
 jobs:
   pytest:
     runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: zap_test
+          POSTGRES_USER: zap
+          POSTGRES_PASSWORD: zap
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U zap -d zap_test"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+
       - run: python -m pip install --upgrade pip
       - run: pip install -e ".[dev]"
       - run: python -m compileall -q app
+
       - name: Import smoke test
         env:
           BOT_TOKEN: test-token
           DATABASE_URL: "sqlite+aiosqlite:///smoke.db"
         run: python -c "import app.main"
-      - name: Database smoke test
+
+      - name: SQLite database smoke test
         env:
           BOT_TOKEN: test-token
           DATABASE_URL: "sqlite+aiosqlite:///smoke.db"
         run: python -c "import asyncio; from app.db import init_db; asyncio.run(init_db())"
+
+      - name: PostgreSQL database smoke test
+        env:
+          BOT_TOKEN: test-token
+          DATABASE_URL: "postgresql+asyncpg://zap:zap@127.0.0.1:5432/zap_test"
+        run: python -c "import asyncio; from app.db import init_db; asyncio.run(init_db())"
+
+      - name: Redis cache smoke test
+        env:
+          BOT_TOKEN: test-token
+          REDIS_URL: "redis://127.0.0.1:6379/15"
+        run: |
+          python - <<'PY'
+          import asyncio
+          from decimal import Decimal
+          from app.cache_backend import RedisSearchCache
+          from app.domain import Offer
+
+          async def main():
+              cache = RedisSearchCache("redis://127.0.0.1:6379/15")
+              offer = Offer("Store", "ATE", "123", "Pads", Decimal("100"), 2, .9)
+              await cache.set("zap:search:ci", [offer], 60)
+              result = await cache.get("zap:search:ci")
+              assert result and result[0].article == "123"
+              await cache.clear()
+
+          asyncio.run(main())
+          PY
+
+      - name: Production bootstrap smoke test
+        env:
+          BOT_TOKEN: test-token
+          DATABASE_URL: "postgresql+asyncpg://zap:zap@127.0.0.1:5432/zap_test"
+          REDIS_URL: "redis://127.0.0.1:6379/14"
+          SEARCH_CACHE_BACKEND: redis
+          RATE_LIMIT_BACKEND: redis
+          DEMO_PROVIDER_ENABLED: "true"
+          DEMO_FITMENT_ENABLED: "true"
+        run: |
+          python - <<'PY'
+          from app.bootstrap import build_app_services
+          from app.config import settings
+
+          services = build_app_services(settings())
+          assert services.providers
+          assert services.search_service.cache.__class__.__name__ == "RedisSearchCache"
+          PY
+
       - run: pytest -q
       - run: docker build -t zap-bot:test .
