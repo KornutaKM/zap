@@ -201,8 +201,16 @@ class GenericHttpCheckoutAdapter:
             )
 
         raw_status = str(data.get("status") or "pending").casefold()
+        status = raw_status if raw_status in {
+            "placed",
+            "pending",
+            "confirmed",
+            "completed",
+            "cancelled",
+            "failed",
+        } else "pending"
         return CheckoutResult(
-            status=raw_status,
+            status=status,
             mode="api",
             external_order_id=external_order_id,
             checkout_url=(
