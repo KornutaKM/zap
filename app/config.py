@@ -6,6 +6,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     bot_token: str
     database_url: str = "sqlite+aiosqlite:///autoparts.db"
+    log_level: str = "INFO"
     search_cache_ttl_seconds: float = 60.0
     provider_timeout_seconds: float = 5.0
     provider_circuit_failure_threshold: int = 3
