@@ -4,7 +4,7 @@ from app.domain import CustomerOrder, SupplierOrderGroup
 from app.ui import order_detail_keyboard, orders_keyboard
 
 
-def order(status: str) -> CustomerOrder:
+def order(status: str, *, with_delivery: bool = True) -> CustomerOrder:
     return CustomerOrder(
         id=7,
         telegram_user_id=42,
@@ -13,6 +13,21 @@ def order(status: str) -> CustomerOrder:
         shipping_total=Decimal("500"),
         grand_total=Decimal("1500"),
         provider_count=1,
+        delivery_snapshot=(
+            {
+                "full_name": "Иван Иванов",
+                "phone": "+79991234567",
+                "email": "ivan@example.com",
+                "country": "Россия",
+                "city": "Москва",
+                "address_line1": "ул. Примерная, 1",
+                "address_line2": None,
+                "postal_code": "101000",
+                "comment": None,
+            }
+            if with_delivery
+            else None
+        ),
     )
 
 
@@ -77,3 +92,12 @@ def test_draft_order_has_cancel_action():
 def test_started_checkout_does_not_show_local_cancel():
     values = callbacks(order_detail_keyboard(order("awaiting_manual_checkout"), []))
     assert "order:cancel:7" not in values
+
+
+
+def test_ready_order_without_delivery_blocks_checkout_button():
+    values = callbacks(
+        order_detail_keyboard(order("ready", with_delivery=False), [])
+    )
+    assert "order:checkout:7" not in values
+    assert "order:delivery:7" in values
