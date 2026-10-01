@@ -686,3 +686,40 @@ def purchase_comparison_text(
         f"{comparison.current_max_delivery_days} дн.\n\n"
         f"Текущая стратегия: <b>{escape(current.title)}</b>"
     )
+
+
+
+def quote_refresh_keyboard(
+    quote_id: int,
+    current: PurchasePlan,
+    plan_index: int = 0,
+) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    seen: set[str] = set()
+    for choice in current.choices:
+        url = choice.offer.url
+        if not url or not url.startswith(("https://", "http://")) or url in seen:
+            continue
+        seen.add(url)
+        rows.append([
+            InlineKeyboardButton(
+                text=f"↗ {choice.offer.provider} · {choice.request.article}",
+                url=url,
+            )
+        ])
+        if len(rows) >= 8:
+            break
+
+    rows.append([
+        InlineKeyboardButton(
+            text="💾 Сохранить как новый",
+            callback_data=f"quote:save:{plan_index}",
+        )
+    ])
+    rows.append([
+        InlineKeyboardButton(
+            text="← К сохранённому расчёту",
+            callback_data=f"quote:open:{quote_id}",
+        )
+    ])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
