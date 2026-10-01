@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from decimal import Decimal
 
+from app.checkout import CheckoutLine, CheckoutRegistry, CheckoutRequest
 from app.db import (
     append_order_event,
     create_customer_order,
@@ -9,6 +10,7 @@ from app.db import (
     replace_supplier_group_totals,
     update_order_line_confirmation,
     update_order_status,
+    update_supplier_group_checkout,
 )
 from app.domain import CustomerOrder, OrderLine, SupplierOrderGroup, Vehicle
 from app.procurement import (
@@ -350,3 +352,207 @@ async def confirm_revalidated_prices(
         message="Пользователь подтвердил обновлённые цены.",
     )
     return updated
+
+
+
+async def checkout_ready_order(
+    user_id: int,
+    order_id: int,
+    registry: CheckoutRegistry,
+) -> CustomerOrder | None:
+    loaded = await get_customer_order(user_id, order_id)
+    if loaded is None:
+        return None
+
+    order, groups, lines, _ = loaded
+    if order.status not in {"ready", "awaiting_manual_checkout", "partially_placed"}:
+        return order
+
+    lines_by_group: dict[int, list[OrderLine]] = {}
+    for line in lines:
+        lines_by_group.setdefault(line.group_id, []).append(line)
+
+    resulting_statuses: list[str] = []
+    for group in groups:
+        if group.status in {"placed", "confirmed", "completed"}:
+            resulting_statuses.append(group.status)
+            continue
+
+        group_lines = lines_by_group.get(group.id, [])
+        if not group_lines or any(not line.in_stock or not line.price_confirmed for line in group_lines):
+            await update_supplier_group_checkout(
+                order_id,
+                group.id,
+                status="needs_attention",
+                last_error="Позиции группы не прошли revalidation.",
+            )
+            resulting_statuses.append("needs_attention")
+            continue
+
+        fallback_url = group.checkout_url or next(
+            (
+                line.offer_url
+                for line in group_lines
+                if line.offer_url and line.offer_url.startswith(("https://", "http://"))
+            ),
+            None,
+        )
+        request = CheckoutRequest(
+            order_id=order_id,
+            group_id=group.id,
+            provider=group.provider,
+            total=group.grand_total,
+            lines=tuple(
+                CheckoutLine(
+                    brand=line.brand,
+                    article=line.article,
+                    title=line.title,
+                    quantity=line.quantity,
+                    unit_price=line.unit_price,
+                )
+                for line in group_lines
+            ),
+            fallback_url=fallback_url,
+        )
+
+        adapter = registry.for_provider(group.provider)
+        result = await adapter.create_checkout(request)
+        updated_group = await update_supplier_group_checkout(
+            order_id,
+            group.id,
+            status=result.status,
+            checkout_mode=result.mode,
+            external_order_id=result.external_order_id,
+            checkout_url=result.checkout_url or fallback_url,
+            last_error=result.error,
+        )
+        resulting_statuses.append(
+            updated_group.status if updated_group is not None else "failed"
+        )
+
+    if not resulting_statuses:
+        target_status = "needs_attention"
+        message = "В заказе нет supplier-групп для оформления."
+    elif all(status in {"placed", "confirmed", "completed"} for status in resulting_statuses):
+        target_status = "placed"
+        message = "Все supplier-группы оформлены."
+    elif any(status == "needs_attention" or status == "failed" for status in resulting_statuses):
+        if any(status in {"placed", "confirmed", "completed", "manual_required"} for status in resulting_statuses):
+            target_status = "partially_placed"
+            message = "Часть supplier-групп требует внимания."
+        else:
+            target_status = "needs_attention"
+            message = "Не удалось начать оформление заказа."
+    elif any(status == "manual_required" for status in resulting_statuses):
+        if any(status in {"placed", "confirmed", "completed"} for status in resulting_statuses):
+            target_status = "partially_placed"
+            message = "Часть заказа оформлена, остальные группы требуют ручного checkout."
+        else:
+            target_status = "awaiting_manual_checkout"
+            message = "Для заказа требуется ручной переход к поставщикам."
+    else:
+        target_status = "checkout_pending"
+        message = "Заказ передан поставщикам и ожидает подтверждения."
+
+    return await update_order_status(
+        user_id,
+        order_id,
+        target_status,
+        message=message,
+    )
+
+
+async def refresh_order_checkout_status(
+    user_id: int,
+    order_id: int,
+    registry: CheckoutRegistry,
+) -> CustomerOrder | None:
+    loaded = await get_customer_order(user_id, order_id)
+    if loaded is None:
+        return None
+
+    order, groups, _, _ = loaded
+    statuses: list[str] = []
+    for group in groups:
+        if not group.external_order_id:
+            statuses.append(group.status)
+            continue
+
+        adapter = registry.for_provider(group.provider)
+        result = await adapter.get_status(group.external_order_id)
+        updated = await update_supplier_group_checkout(
+            order_id,
+            group.id,
+            status=result.status,
+            checkout_mode=result.mode,
+            external_order_id=group.external_order_id,
+            checkout_url=result.checkout_url or group.checkout_url,
+            last_error=result.error,
+        )
+        statuses.append(updated.status if updated is not None else "failed")
+
+    if statuses and all(status in {"completed"} for status in statuses):
+        target = "completed"
+        message = "Все supplier-группы завершены."
+    elif statuses and all(status in {"placed", "confirmed", "completed"} for status in statuses):
+        target = "placed"
+        message = "Все supplier-группы подтверждены поставщиками."
+    elif any(status in {"failed", "cancelled", "needs_attention"} for status in statuses):
+        target = "partially_placed"
+        message = "Часть supplier-групп изменила статус и требует внимания."
+    elif any(status == "manual_required" for status in statuses):
+        target = "awaiting_manual_checkout"
+        message = "Ожидается ручное оформление части заказа."
+    else:
+        target = "checkout_pending"
+        message = "Ожидается подтверждение поставщиков."
+
+    return await update_order_status(
+        user_id,
+        order_id,
+        target,
+        message=message,
+    )
+
+
+async def mark_manual_group_placed(
+    user_id: int,
+    order_id: int,
+    group_id: int,
+) -> CustomerOrder | None:
+    loaded = await get_customer_order(user_id, order_id)
+    if loaded is None:
+        return None
+
+    order, groups, _, _ = loaded
+    group = next((item for item in groups if item.id == group_id), None)
+    if group is None or group.status != "manual_required":
+        return order
+
+    await update_supplier_group_checkout(
+        order_id,
+        group_id,
+        status="placed",
+        checkout_mode="deeplink",
+        external_order_id=group.external_order_id,
+        checkout_url=group.checkout_url,
+        last_error=None,
+    )
+
+    reloaded = await get_customer_order(user_id, order_id)
+    if reloaded is None:
+        return None
+    _, refreshed_groups, _, _ = reloaded
+    if all(item.status in {"placed", "confirmed", "completed"} for item in refreshed_groups):
+        target = "placed"
+        message = "Пользователь подтвердил ручное оформление всех supplier-групп."
+    else:
+        target = "partially_placed"
+        message = "Пользователь подтвердил ручное оформление одной supplier-группы."
+
+    return await update_order_status(
+        user_id,
+        order_id,
+        target,
+        message=message,
+    )
