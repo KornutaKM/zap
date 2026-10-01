@@ -1,10 +1,12 @@
 import asyncio
+import logging
 import time
 
 from dataclasses import dataclass, replace
 
 from app.domain import Offer, PartCandidate, Vehicle, group_offers, rank_parts
 from app.fitment import FitmentCatalog, FitmentResolution
+from app.observability import log_event
 from app.providers import PartsProvider
 
 
@@ -26,6 +28,9 @@ class ProviderHealth:
         if self.consecutive_failures > 0:
             return "degraded"
         return "healthy"
+
+
+logger = logging.getLogger("zap.search")
 
 
 class PartsSearchService:
@@ -69,6 +74,14 @@ class PartsSearchService:
         health = self._provider_health[id(provider)]
         now = time.monotonic()
         if health.circuit_open_until > now:
+            log_event(
+                logger,
+                logging.WARNING,
+                "provider_circuit_skip",
+                "provider call skipped while circuit is open",
+                provider=health.name,
+                retry_after_seconds=round(health.circuit_open_until - now, 1),
+            )
             return []
 
         health.calls += 1
@@ -84,17 +97,45 @@ class PartsSearchService:
             health.last_error = type(exc).__name__
             health.last_latency_ms = (time.monotonic() - started) * 1000
 
+            log_event(
+                logger,
+                logging.WARNING,
+                "provider_failure",
+                "provider request failed",
+                provider=health.name,
+                error=health.last_error,
+                consecutive_failures=health.consecutive_failures,
+                latency_ms=round(health.last_latency_ms, 1),
+            )
             if health.consecutive_failures >= self.circuit_failure_threshold:
                 health.circuit_open_until = (
                     time.monotonic() + self.circuit_cooldown_seconds
                 )
+                log_event(
+                    logger,
+                    logging.ERROR,
+                    "provider_circuit_open",
+                    "provider circuit opened",
+                    provider=health.name,
+                    cooldown_seconds=self.circuit_cooldown_seconds,
+                )
             return []
 
+        was_degraded = health.consecutive_failures > 0 or health.circuit_open_until > 0
         health.successes += 1
         health.consecutive_failures = 0
         health.circuit_open_until = 0.0
         health.last_error = None
         health.last_latency_ms = (time.monotonic() - started) * 1000
+        if was_degraded:
+            log_event(
+                logger,
+                logging.INFO,
+                "provider_recovered",
+                "provider recovered",
+                provider=health.name,
+                latency_ms=round(health.last_latency_ms, 1),
+            )
         return result
 
     async def raw_offers(self, vehicle: Vehicle | None, query: str) -> list[Offer]:
