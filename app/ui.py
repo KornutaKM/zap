@@ -8,7 +8,8 @@ from aiogram.types import (
 )
 
 from app.catalog import get_children, get_node
-from app.domain import FavoritePart, Offer, PartCandidate, SearchHistoryItem, Vehicle
+from app.domain import FavoritePart, Offer, PartCandidate, SearchHistoryItem, ShoppingListItem, Vehicle
+from app.procurement import PurchasePlan
 from app.service_kits import BuiltKit, SERVICE_KITS
 from app.vehicle_catalog import VehicleGeneration
 from app.vehicle_resolver import VehicleModification
@@ -20,6 +21,7 @@ BTN_GARAGE = "🚗 Мой автомобиль"
 BTN_FAVORITES = "⭐ Избранное"
 BTN_HISTORY = "🕘 История"
 BTN_ALERTS = "🔔 Цены"
+BTN_SHOPPING = "🛒 Закупка"
 BTN_ADD_CAR = "🚗 Добавить автомобиль"
 BTN_MODEL_CATALOG = "📚 Каталог по модели"
 BTN_ARTICLE = "🔎 Найти по артикулу"
@@ -32,14 +34,14 @@ def main_menu(has_vehicle: bool) -> ReplyKeyboardMarkup:
             [KeyboardButton(text=BTN_SEARCH), KeyboardButton(text=BTN_CATALOG)],
             [KeyboardButton(text=BTN_SERVICE), KeyboardButton(text=BTN_GARAGE)],
             [KeyboardButton(text=BTN_FAVORITES), KeyboardButton(text=BTN_HISTORY)],
-            [KeyboardButton(text=BTN_ALERTS)],
+            [KeyboardButton(text=BTN_SHOPPING), KeyboardButton(text=BTN_ALERTS)],
         ]
     else:
         rows = [
             [KeyboardButton(text=BTN_ADD_CAR)],
             [KeyboardButton(text=BTN_MODEL_CATALOG), KeyboardButton(text=BTN_ARTICLE)],
             [KeyboardButton(text=BTN_FAVORITES), KeyboardButton(text=BTN_HISTORY)],
-            [KeyboardButton(text=BTN_ALERTS)],
+            [KeyboardButton(text=BTN_SHOPPING), KeyboardButton(text=BTN_ALERTS)],
         ]
 
     return ReplyKeyboardMarkup(
@@ -147,18 +149,43 @@ def parts_results_keyboard(
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def part_detail_keyboard(index: int, parent_id: str | None = None) -> InlineKeyboardMarkup:
+def part_detail_keyboard(
+    index: int,
+    parent_id: str | None = None,
+    candidate: PartCandidate | None = None,
+) -> InlineKeyboardMarkup:
     rows = [
         [
+            InlineKeyboardButton(text="🛒 В закупку", callback_data=f"shop:add:{index}"),
             InlineKeyboardButton(text="⭐ В избранное", callback_data=f"favorite:add:{index}"),
-            InlineKeyboardButton(text="🔔 Следить", callback_data=f"alert:add:{index}"),
         ],
+        [InlineKeyboardButton(text="🔔 Следить за ценой", callback_data=f"alert:add:{index}")],
+    ]
+
+    if candidate is not None:
+        seen_urls: set[str] = set()
+        for offer in candidate.offers:
+            if not offer.url or not offer.url.startswith(("https://", "http://")):
+                continue
+            if offer.url in seen_urls:
+                continue
+            seen_urls.add(offer.url)
+            rows.append([
+                InlineKeyboardButton(
+                    text=f"↗ {offer.provider} · {offer.price:,.0f} ₽".replace(",", " "),
+                    url=offer.url,
+                )
+            ])
+            if len(seen_urls) >= 3:
+                break
+
+    rows.extend([
         [InlineKeyboardButton(text="← К вариантам", callback_data="partlist:back")],
         [
             InlineKeyboardButton(text="🔎 Новый поиск", callback_data="action:search"),
             InlineKeyboardButton(text="📚 Каталог", callback_data="cat:root"),
         ],
-    ]
+    ])
     if parent_id:
         rows.append([InlineKeyboardButton(text="← К разделу", callback_data=f"cat:{parent_id}")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -439,3 +466,105 @@ def price_alert_target_keyboard(index: int) -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="Отмена", callback_data=f"part:{index}")],
         ]
     )
+
+
+
+def shopping_list_keyboard(items: list[ShoppingListItem]) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    for item in items[:20]:
+        rows.append([
+            InlineKeyboardButton(text="−", callback_data=f"shop:qty:{item.id}:-1"),
+            InlineKeyboardButton(
+                text=f"{item.brand} {item.article} × {item.quantity}",
+                callback_data=f"shop:item:{item.id}",
+            ),
+            InlineKeyboardButton(text="+", callback_data=f"shop:qty:{item.id}:1"),
+            InlineKeyboardButton(text="✕", callback_data=f"shop:del:{item.id}"),
+        ])
+
+    if items:
+        rows.append([
+            InlineKeyboardButton(text="🧮 Рассчитать заказ", callback_data="shop:optimize")
+        ])
+        rows.append([
+            InlineKeyboardButton(text="🗑 Очистить список", callback_data="shop:clear")
+        ])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def shopping_list_text(items: list[ShoppingListItem]) -> str:
+    if not items:
+        return "<b>Список закупки пуст</b>\nДобавляйте детали из карточек."
+
+    lines = ["<b>Список закупки</b>", ""]
+    for index, item in enumerate(items, start=1):
+        lines.append(
+            f"{index}. <b>{escape(item.brand)}</b> · "
+            f"<code>{escape(item.article)}</code> × {item.quantity}\n"
+            f"   {escape(item.title)}"
+        )
+    lines.extend([
+        "",
+        "Нажмите «Рассчитать заказ», чтобы обновить цены и сравнить магазины.",
+    ])
+    return "\n".join(lines)
+
+
+def purchase_plan_text(plan: PurchasePlan, index: int) -> str:
+    item_total = f"{plan.item_total:,.0f}".replace(",", " ")
+    shipping = f"{plan.shipping_total:,.0f}".replace(",", " ")
+    total = f"{plan.grand_total:,.0f}".replace(",", " ")
+
+    lines = [
+        f"<b>{index}. {escape(plan.title)}</b>",
+        f"Детали: {item_total} ₽ · доставка: {shipping} ₽",
+        f"Итого: <b>{total} ₽</b>",
+        f"Магазинов: {plan.provider_count} · срок до {plan.max_delivery_days} дн.",
+        "",
+    ]
+    for choice in plan.choices:
+        price = f"{choice.offer.price:,.0f}".replace(",", " ")
+        lines.append(
+            f"• {escape(choice.request.brand)} "
+            f"<code>{escape(choice.request.article)}</code> × {choice.request.quantity}\n"
+            f"  {escape(choice.offer.provider)} · {price} ₽ · "
+            f"{choice.offer.delivery_days} дн."
+        )
+    return "\n".join(lines)
+
+
+def purchase_plan_keyboard(plan: PurchasePlan) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    seen: set[str] = set()
+    for choice in plan.choices:
+        url = choice.offer.url
+        if not url or not url.startswith(("https://", "http://")) or url in seen:
+            continue
+        seen.add(url)
+        rows.append([
+            InlineKeyboardButton(
+                text=f"↗ {choice.offer.provider} · {choice.request.article}",
+                url=url,
+            )
+        ])
+        if len(rows) >= 8:
+            break
+
+    rows.append([
+        InlineKeyboardButton(text="← К списку", callback_data="shop:back")
+    ])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def purchase_plans_keyboard(plans: list[PurchasePlan]) -> InlineKeyboardMarkup:
+    rows = [
+        [
+            InlineKeyboardButton(
+                text=f"{index + 1}. {plan.title}",
+                callback_data=f"shop:plan:{index}",
+            )
+        ]
+        for index, plan in enumerate(plans[:5])
+    ]
+    rows.append([InlineKeyboardButton(text="← К списку", callback_data="shop:back")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
