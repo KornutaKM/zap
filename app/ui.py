@@ -8,7 +8,7 @@ from aiogram.types import (
 )
 
 from app.catalog import get_children, get_node
-from app.domain import FavoritePart, Offer, PartCandidate, SavedPurchaseQuote, SearchHistoryItem, ShoppingListItem, Vehicle
+from app.domain import CustomerOrder, FavoritePart, Offer, OrderEvent, OrderLine, PartCandidate, SavedPurchaseQuote, SearchHistoryItem, ShoppingListItem, SupplierOrderGroup, Vehicle
 from app.procurement import PurchasePlan, PurchasePlanComparison
 from app.service_kits import BuiltKit, SERVICE_KITS
 from app.vehicle_catalog import VehicleGeneration
@@ -25,6 +25,7 @@ BTN_ALERTS = "🔔 Цены"
 BTN_SHOPPING = "🛒 Закупка"
 BTN_WORKS = "🧰 Работы"
 BTN_QUOTES = "📄 Расчёты"
+BTN_ORDERS = "📦 Заказы"
 BTN_ADD_CAR = "🚗 Добавить автомобиль"
 BTN_MODEL_CATALOG = "📚 Каталог по модели"
 BTN_ARTICLE = "🔎 Найти по артикулу"
@@ -38,7 +39,8 @@ def main_menu(has_vehicle: bool) -> ReplyKeyboardMarkup:
             [KeyboardButton(text=BTN_SERVICE), KeyboardButton(text=BTN_WORKS)],
             [KeyboardButton(text=BTN_GARAGE), KeyboardButton(text=BTN_SHOPPING)],
             [KeyboardButton(text=BTN_FAVORITES), KeyboardButton(text=BTN_HISTORY)],
-            [KeyboardButton(text=BTN_QUOTES), KeyboardButton(text=BTN_ALERTS)],
+            [KeyboardButton(text=BTN_QUOTES), KeyboardButton(text=BTN_ORDERS)],
+            [KeyboardButton(text=BTN_ALERTS)],
         ]
     else:
         rows = [
@@ -46,7 +48,7 @@ def main_menu(has_vehicle: bool) -> ReplyKeyboardMarkup:
             [KeyboardButton(text=BTN_MODEL_CATALOG), KeyboardButton(text=BTN_ARTICLE)],
             [KeyboardButton(text=BTN_SHOPPING), KeyboardButton(text=BTN_FAVORITES)],
             [KeyboardButton(text=BTN_HISTORY), KeyboardButton(text=BTN_QUOTES)],
-            [KeyboardButton(text=BTN_ALERTS)],
+            [KeyboardButton(text=BTN_ORDERS), KeyboardButton(text=BTN_ALERTS)],
         ]
 
     return ReplyKeyboardMarkup(
@@ -564,6 +566,12 @@ def purchase_plan_keyboard(
     if plan_index is not None:
         rows.append([
             InlineKeyboardButton(
+                text="📦 Создать заказ",
+                callback_data=f"order:create:plan:{plan_index}",
+            )
+        ])
+        rows.append([
+            InlineKeyboardButton(
                 text="💾 Сохранить расчёт",
                 callback_data=f"quote:save:{plan_index}",
             )
@@ -647,6 +655,9 @@ def saved_quote_keyboard(
             break
 
     rows.append([
+        InlineKeyboardButton(text="📦 Создать заказ", callback_data=f"order:create:quote:{quote_id}")
+    ])
+    rows.append([
         InlineKeyboardButton(text="🔄 Пересчитать сейчас", callback_data=f"quote:refresh:{quote_id}")
     ])
     rows.append([
@@ -721,5 +732,161 @@ def quote_refresh_keyboard(
             text="← К сохранённому расчёту",
             callback_data=f"quote:open:{quote_id}",
         )
+    ])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+
+ORDER_STATUS_LABELS = {
+    "draft": "Черновик",
+    "ready": "Готов к оформлению",
+    "price_changed": "Цена изменилась",
+    "needs_attention": "Требует внимания",
+    "checkout_pending": "Ожидает поставщика",
+    "awaiting_manual_checkout": "Нужно оформить вручную",
+    "partially_placed": "Оформлен частично",
+    "placed": "Оформлен",
+    "completed": "Завершён",
+    "cancelled": "Отменён",
+}
+
+
+def order_status_label(status: str) -> str:
+    return ORDER_STATUS_LABELS.get(status, status)
+
+
+def orders_keyboard(orders: list[CustomerOrder]) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    for order in orders[:20]:
+        total = f"{order.grand_total:,.0f}".replace(",", " ")
+        rows.append([
+            InlineKeyboardButton(
+                text=(
+                    f"#{order.id} · {order_status_label(order.status)} · "
+                    f"{total} ₽"
+                ),
+                callback_data=f"order:open:{order.id}",
+            )
+        ])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def order_detail_text(
+    order: CustomerOrder,
+    groups: list[SupplierOrderGroup],
+    lines: list[OrderLine],
+    events: list[OrderEvent],
+) -> str:
+    item_total = f"{order.item_total:,.0f}".replace(",", " ")
+    shipping = f"{order.shipping_total:,.0f}".replace(",", " ")
+    total = f"{order.grand_total:,.0f}".replace(",", " ")
+
+    lines_by_group: dict[int, list[OrderLine]] = {}
+    for line in lines:
+        lines_by_group.setdefault(line.group_id, []).append(line)
+
+    text_lines = [
+        f"<b>Заказ #{order.id}</b>",
+        f"Статус: <b>{escape(order_status_label(order.status))}</b>",
+        f"Детали: {item_total} ₽ · доставка: {shipping} ₽",
+        f"Итого: <b>{total} ₽</b>",
+        "",
+        "<b>Поставщики</b>",
+    ]
+
+    for group in groups:
+        group_total = f"{group.grand_total:,.0f}".replace(",", " ")
+        mode = "API" if group.checkout_mode == "api" else "deeplink"
+        text_lines.append(
+            f"• <b>{escape(group.provider)}</b> — "
+            f"{escape(order_status_label(group.status))} · "
+            f"{group_total} ₽ · {mode}"
+        )
+        for line in lines_by_group.get(group.id, []):
+            confirmed = "✓" if line.price_confirmed and line.in_stock else "!"
+            price = f"{line.unit_price:,.0f}".replace(",", " ")
+            text_lines.append(
+                f"  {confirmed} {escape(line.brand)} "
+                f"<code>{escape(line.article)}</code> × {line.quantity} · "
+                f"{price} ₽"
+            )
+
+    if events:
+        text_lines.extend(["", "<b>Последние события</b>"])
+        for event in events[:5]:
+            created = (
+                event.created_at[:16].replace("T", " ")
+                if event.created_at
+                else "—"
+            )
+            text_lines.append(
+                f"• {escape(created)} · {escape(event.message)}"
+            )
+
+    return "\n".join(text_lines)
+
+
+def order_detail_keyboard(
+    order: CustomerOrder,
+    groups: list[SupplierOrderGroup],
+) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+
+    if order.status in {"draft", "needs_attention", "price_changed"}:
+        rows.append([
+            InlineKeyboardButton(
+                text="🔍 Проверить цены и наличие",
+                callback_data=f"order:revalidate:{order.id}",
+            )
+        ])
+
+    if order.status == "price_changed":
+        rows.append([
+            InlineKeyboardButton(
+                text="✅ Подтвердить новые цены",
+                callback_data=f"order:confirmprices:{order.id}",
+            )
+        ])
+
+    if order.status == "ready":
+        rows.append([
+            InlineKeyboardButton(
+                text="🚀 Перейти к оформлению",
+                callback_data=f"order:checkout:{order.id}",
+            )
+        ])
+
+    if order.status in {
+        "checkout_pending",
+        "awaiting_manual_checkout",
+        "partially_placed",
+        "placed",
+    }:
+        rows.append([
+            InlineKeyboardButton(
+                text="🔄 Обновить статус",
+                callback_data=f"order:refresh:{order.id}",
+            )
+        ])
+
+    for group in groups:
+        if group.status != "manual_required":
+            continue
+        if group.checkout_url and group.checkout_url.startswith(("https://", "http://")):
+            rows.append([
+                InlineKeyboardButton(
+                    text=f"↗ Оформить в {group.provider}",
+                    url=group.checkout_url,
+                )
+            ])
+            rows.append([
+                InlineKeyboardButton(
+                    text=f"✅ Я оформил в {group.provider}",
+                    callback_data=f"order:manual:{order.id}:{group.id}",
+                )
+            ])
+
+    rows.append([
+        InlineKeyboardButton(text="← К заказам", callback_data="order:list")
     ])
     return InlineKeyboardMarkup(inline_keyboard=rows)
