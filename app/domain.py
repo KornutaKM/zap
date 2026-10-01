@@ -12,6 +12,21 @@ class Vehicle:
 
 
 @dataclass(slots=True, frozen=True)
+class SearchHistoryItem:
+    id: int
+    query: str
+    vehicle_label: str | None = None
+
+
+@dataclass(slots=True, frozen=True)
+class FavoritePart:
+    id: int
+    brand: str
+    article: str
+    title: str
+
+
+@dataclass(slots=True, frozen=True)
 class Offer:
     provider: str
     brand: str
