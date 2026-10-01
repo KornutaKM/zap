@@ -81,6 +81,22 @@ class PriceHistoryPoint:
 
 
 @dataclass(slots=True, frozen=True)
+class DeliveryProfile:
+    id: int
+    telegram_user_id: int
+    full_name: str
+    phone: str
+    country: str
+    city: str
+    address_line1: str
+    postal_code: str | None = None
+    email: str | None = None
+    address_line2: str | None = None
+    comment: str | None = None
+    updated_at: str | None = None
+
+
+@dataclass(slots=True, frozen=True)
 class CustomerOrder:
     id: int
     telegram_user_id: int
@@ -91,6 +107,8 @@ class CustomerOrder:
     provider_count: int
     vehicle_id: int | None = None
     source_quote_id: int | None = None
+    delivery_profile_id: int | None = None
+    delivery_snapshot: dict[str, str | None] | None = None
     created_at: str | None = None
     updated_at: str | None = None
 
