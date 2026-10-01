@@ -13,6 +13,9 @@ class Settings(BaseSettings):
     provider_timeout_seconds: float = 5.0
     provider_circuit_failure_threshold: int = 3
     provider_circuit_cooldown_seconds: float = 60.0
+    rate_limit_backend: str = "memory"
+    rate_limit_requests: int = 60
+    rate_limit_window_seconds: int = 60
     external_provider_enabled: bool = False
     external_provider_name: str = "Partner API"
     external_provider_base_url: str | None = None
