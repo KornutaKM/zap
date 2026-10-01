@@ -182,8 +182,14 @@ async def send_search_results(
     )
 
 
-async def start_search(message: Message, state: FSMContext, article_only: bool = False) -> None:
-    vehicle = await get_vehicle(message.from_user.id)
+async def start_search(
+    message: Message,
+    state: FSMContext,
+    article_only: bool = False,
+    user_id: int | None = None,
+) -> None:
+    resolved_user_id = user_id if user_id is not None else message.from_user.id
+    vehicle, _ = await get_catalog_vehicle(state, resolved_user_id)
     if vehicle is None:
         await message.answer(
             "Сначала выберите автомобиль. Можно добавить его в гараж или открыть каталог по модели.",
@@ -411,21 +417,27 @@ async def search_query(message: Message, state: FSMContext):
         await message.answer("Введите название детали или артикул.")
         return
 
-    vehicle = await get_vehicle(message.from_user.id)
+    vehicle, source = await get_catalog_vehicle(state, message.from_user.id)
     await state.clear()
     if vehicle is None:
         await message.answer("Автомобиль не найден.", reply_markup=main_menu(False))
         return
 
-    await send_search_results(message, vehicle, query)
-    await message.answer("Что дальше?", reply_markup=main_menu(True))
+    note = (
+        "Общий каталог модели: точная совместимость пока не подтверждена."
+        if source == "temporary"
+        else None
+    )
+    await send_search_results(message, vehicle, query, compatibility_note=note)
+    saved_vehicle = await get_vehicle(message.from_user.id)
+    await message.answer("Что дальше?", reply_markup=main_menu(saved_vehicle is not None))
 
 
 @dp.callback_query(F.data == "action:search")
 async def callback_new_search(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
     if callback.message:
-        await start_search(callback.message, state)
+        await start_search(callback.message, state, user_id=callback.from_user.id)
 
 
 @dp.callback_query(F.data.startswith("cat:"))
@@ -502,7 +514,7 @@ async def free_text(message: Message, state: FSMContext):
         await show_catalog_root(message, state, brand, model, None, None, "temporary")
         return
 
-    vehicle = await get_vehicle(message.from_user.id)
+    vehicle, source = await get_catalog_vehicle(state, message.from_user.id)
     if vehicle is None:
         await message.answer(
             "Сначала укажите автомобиль или откройте каталог по модели.",
@@ -510,8 +522,14 @@ async def free_text(message: Message, state: FSMContext):
         )
         return
 
-    await send_search_results(message, vehicle, text)
-    await message.answer("Что дальше?", reply_markup=main_menu(True))
+    note = (
+        "Общий каталог модели: точная совместимость пока не подтверждена."
+        if source == "temporary"
+        else None
+    )
+    await send_search_results(message, vehicle, text, compatibility_note=note)
+    saved_vehicle = await get_vehicle(message.from_user.id)
+    await message.answer("Что дальше?", reply_markup=main_menu(saved_vehicle is not None))
 
 
 async def main():
