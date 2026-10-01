@@ -81,6 +81,65 @@ class PriceHistoryPoint:
 
 
 @dataclass(slots=True, frozen=True)
+class CustomerOrder:
+    id: int
+    telegram_user_id: int
+    status: str
+    item_total: Decimal
+    shipping_total: Decimal
+    grand_total: Decimal
+    provider_count: int
+    vehicle_id: int | None = None
+    source_quote_id: int | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
+@dataclass(slots=True, frozen=True)
+class SupplierOrderGroup:
+    id: int
+    order_id: int
+    provider: str
+    status: str
+    item_total: Decimal
+    shipping_total: Decimal
+    grand_total: Decimal
+    checkout_mode: str = "deeplink"
+    external_order_id: str | None = None
+    checkout_url: str | None = None
+    last_error: str | None = None
+
+
+@dataclass(slots=True, frozen=True)
+class OrderLine:
+    id: int
+    order_id: int
+    group_id: int
+    provider: str
+    brand: str
+    article: str
+    title: str
+    quantity: int
+    unit_price: Decimal
+    delivery_days: int
+    offer_url: str | None = None
+    in_stock: bool = True
+    price_confirmed: bool = False
+
+
+@dataclass(slots=True, frozen=True)
+class OrderEvent:
+    id: int
+    order_id: int
+    event_type: str
+    message: str
+    from_status: str | None = None
+    to_status: str | None = None
+    provider: str | None = None
+    created_at: str | None = None
+
+
+@dataclass(slots=True, frozen=True)
 class Offer:
     provider: str
     brand: str
