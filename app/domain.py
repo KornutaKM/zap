@@ -46,6 +46,17 @@ class PriceAlert:
 
 
 @dataclass(slots=True, frozen=True)
+class ShoppingListItem:
+    id: int
+    telegram_user_id: int
+    brand: str
+    article: str
+    title: str
+    quantity: int = 1
+    vehicle_id: int | None = None
+
+
+@dataclass(slots=True, frozen=True)
 class Offer:
     provider: str
     brand: str
