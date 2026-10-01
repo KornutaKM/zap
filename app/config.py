@@ -25,6 +25,13 @@ class Settings(BaseSettings):
     fitment_api_key_header: str = "Authorization"
     fitment_api_auth_scheme: str = "Bearer"
     fitment_api_allow_http: bool = False
+    vehicle_api_enabled: bool = False
+    vehicle_api_base_url: str | None = None
+    vehicle_api_vin_path: str = "/vehicle/vin"
+    vehicle_api_key: str | None = None
+    vehicle_api_key_header: str = "Authorization"
+    vehicle_api_auth_scheme: str = "Bearer"
+    vehicle_api_allow_http: bool = False
     price_alerts_enabled: bool = True
     price_alert_interval_seconds: int = 3600
     price_alert_drop_percent: float = 5.0
