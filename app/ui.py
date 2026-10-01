@@ -8,7 +8,8 @@ from aiogram.types import (
 )
 
 from app.catalog import get_children, get_node
-from app.domain import CustomerOrder, DeliveryProfile, FavoritePart, Offer, OrderEvent, OrderLine, PartCandidate, SavedPurchaseQuote, SearchHistoryItem, ShoppingListItem, SupplierOrderGroup, Vehicle
+from app.support_cases import can_request_return, case_priority_label, case_status_label, case_type_label
+from app.domain import CustomerOrder, DeliveryProfile, FavoritePart, Offer, OrderCase, OrderCaseNote, OrderEvent, OrderLine, PartCandidate, SavedPurchaseQuote, SearchHistoryItem, ShoppingListItem, SupplierOrderGroup, Vehicle
 from app.procurement import PurchasePlan, PurchasePlanComparison
 from app.service_kits import BuiltKit, SERVICE_KITS
 from app.vehicle_catalog import VehicleGeneration
@@ -27,6 +28,7 @@ BTN_WORKS = "🧰 Работы"
 BTN_QUOTES = "📄 Расчёты"
 BTN_ORDERS = "📦 Заказы"
 BTN_DELIVERY = "👤 Доставка"
+BTN_CASES = "🆘 Обращения"
 BTN_SKIP = "Пропустить"
 BTN_ADD_CAR = "🚗 Добавить автомобиль"
 BTN_MODEL_CATALOG = "📚 Каталог по модели"
@@ -42,7 +44,8 @@ def main_menu(has_vehicle: bool) -> ReplyKeyboardMarkup:
             [KeyboardButton(text=BTN_GARAGE), KeyboardButton(text=BTN_SHOPPING)],
             [KeyboardButton(text=BTN_FAVORITES), KeyboardButton(text=BTN_HISTORY)],
             [KeyboardButton(text=BTN_QUOTES), KeyboardButton(text=BTN_ORDERS)],
-            [KeyboardButton(text=BTN_DELIVERY), KeyboardButton(text=BTN_ALERTS)],
+            [KeyboardButton(text=BTN_DELIVERY), KeyboardButton(text=BTN_CASES)],
+            [KeyboardButton(text=BTN_ALERTS)],
         ]
     else:
         rows = [
@@ -51,7 +54,7 @@ def main_menu(has_vehicle: bool) -> ReplyKeyboardMarkup:
             [KeyboardButton(text=BTN_SHOPPING), KeyboardButton(text=BTN_FAVORITES)],
             [KeyboardButton(text=BTN_HISTORY), KeyboardButton(text=BTN_QUOTES)],
             [KeyboardButton(text=BTN_ORDERS), KeyboardButton(text=BTN_DELIVERY)],
-            [KeyboardButton(text=BTN_ALERTS)],
+            [KeyboardButton(text=BTN_CASES), KeyboardButton(text=BTN_ALERTS)],
         ]
 
     return ReplyKeyboardMarkup(
@@ -1001,6 +1004,20 @@ def order_detail_keyboard(
             ])
 
     rows.append([
+        InlineKeyboardButton(
+            text="🆘 Сообщить о проблеме",
+            callback_data=f"case:support:{order.id}",
+        )
+    ])
+    if can_request_return(order):
+        rows.append([
+            InlineKeyboardButton(
+                text="↩️ Запросить возврат",
+                callback_data=f"case:return:{order.id}",
+            )
+        ])
+
+    rows.append([
         InlineKeyboardButton(text="← К заказам", callback_data="order:list")
     ])
     return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -1023,4 +1040,159 @@ def external_cancel_confirm_keyboard(order_id: int) -> InlineKeyboardMarkup:
                 )
             ],
         ]
+    )
+
+
+
+def user_cases_keyboard(cases: list[OrderCase]) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    for case in cases[:30]:
+        rows.append([
+            InlineKeyboardButton(
+                text=(
+                    f"#{case.id} · {case_type_label(case.case_type)} · "
+                    f"{case_status_label(case.status)}"
+                ),
+                callback_data=f"case:open:{case.id}",
+            )
+        ])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def operator_cases_keyboard(cases: list[OrderCase]) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    for case in cases[:50]:
+        priority = "⚠️ " if case.priority == "urgent" else ""
+        rows.append([
+            InlineKeyboardButton(
+                text=(
+                    f"{priority}#{case.id} · заказ #{case.order_id} · "
+                    f"{case_type_label(case.case_type)}"
+                ),
+                callback_data=f"ops:case:{case.id}",
+            )
+        ])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def order_case_text(
+    case: OrderCase,
+    notes: list[OrderCaseNote],
+    *,
+    operator_view: bool = False,
+) -> str:
+    lines = [
+        f"<b>Обращение #{case.id}</b>",
+        f"Заказ: <b>#{case.order_id}</b>",
+        f"Тип: {escape(case_type_label(case.case_type))}",
+        f"Статус: <b>{escape(case_status_label(case.status))}</b>",
+        f"Приоритет: {escape(case_priority_label(case.priority))}",
+        f"Тема: {escape(case.summary)}",
+    ]
+
+    if operator_view:
+        lines.append(f"Пользователь: <code>{case.telegram_user_id}</code>")
+        assigned = (
+            str(case.assigned_operator_user_id)
+            if case.assigned_operator_user_id
+            else "не назначен"
+        )
+        lines.append(f"Оператор: <code>{escape(assigned)}</code>")
+
+    visible_notes = (
+        notes
+        if operator_view
+        else [note for note in notes if note.author_role == "user"]
+    )
+    if visible_notes:
+        lines.extend(["", "<b>Сообщения</b>"])
+        for note in visible_notes[-8:]:
+            role = {
+                "user": "Пользователь",
+                "operator_internal": "Оператор",
+                "operator": "Оператор",
+                "system": "Система",
+            }.get(note.author_role, note.author_role)
+            created = (
+                note.created_at[:16].replace("T", " ")
+                if note.created_at
+                else "—"
+            )
+            lines.append(
+                f"• {escape(created)} · <b>{escape(role)}</b>: "
+                f"{escape(note.body)}"
+            )
+
+    if case.resolution:
+        lines.extend([
+            "",
+            "<b>Результат</b>",
+            escape(case.resolution),
+        ])
+
+    return "\n".join(lines)
+
+
+def user_case_keyboard(case: OrderCase) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    if case.status != "resolved":
+        rows.append([
+            InlineKeyboardButton(
+                text="💬 Добавить сообщение",
+                callback_data=f"case:note:{case.id}",
+            )
+        ])
+    rows.append([
+        InlineKeyboardButton(
+            text="📦 Открыть заказ",
+            callback_data=f"order:open:{case.order_id}",
+        )
+    ])
+    rows.append([
+        InlineKeyboardButton(text="← К обращениям", callback_data="case:list")
+    ])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def operator_case_keyboard(case: OrderCase) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    if case.status != "resolved":
+        rows.append([
+            InlineKeyboardButton(
+                text="🙋 Взять в работу",
+                callback_data=f"ops:assign:{case.id}",
+            )
+        ])
+        rows.append([
+            InlineKeyboardButton(
+                text="📝 Внутренняя заметка",
+                callback_data=f"ops:note:{case.id}",
+            )
+        ])
+        rows.append([
+            InlineKeyboardButton(
+                text="✅ Закрыть с резолюцией",
+                callback_data=f"ops:resolve:{case.id}",
+            )
+        ])
+    rows.append([
+        InlineKeyboardButton(
+            text="📦 Карточка заказа",
+            callback_data=f"ops:order:{case.order_id}:{case.id}",
+        )
+    ])
+    rows.append([
+        InlineKeyboardButton(text="← Очередь", callback_data="ops:list")
+    ])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def operator_order_keyboard(case_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[[
+            InlineKeyboardButton(
+                text="← К кейсу",
+                callback_data=f"ops:case:{case_id}",
+            )
+        ]]
     )
