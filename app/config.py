@@ -1,4 +1,5 @@
 from functools import lru_cache
+from decimal import Decimal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -16,6 +17,8 @@ class Settings(BaseSettings):
     rate_limit_backend: str = "memory"
     rate_limit_requests: int = 60
     rate_limit_window_seconds: int = 60
+    procurement_shipping_fee: Decimal = Decimal("500")
+    procurement_free_shipping_threshold: Decimal = Decimal("10000")
     external_provider_enabled: bool = False
     external_provider_name: str = "Partner API"
     external_provider_base_url: str | None = None
