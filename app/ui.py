@@ -107,6 +107,11 @@ def parts_results_keyboard(
         for index, item in enumerate(candidates[:5])
     ]
     rows.append([
+        InlineKeyboardButton(text="⭐ Рекоменд.", callback_data="sort:recommended"),
+        InlineKeyboardButton(text="💰 Дешевле", callback_data="sort:price"),
+        InlineKeyboardButton(text="🚚 Быстрее", callback_data="sort:speed"),
+    ])
+    rows.append([
         InlineKeyboardButton(text="🔎 Новый поиск", callback_data="action:search"),
         InlineKeyboardButton(text="📚 Каталог", callback_data="cat:root"),
     ])
