@@ -63,6 +63,8 @@ class Settings(BaseSettings):
     order_status_monitor_enabled: bool = False
     order_status_interval_seconds: int = 300
     operator_user_ids: str | None = None
+    operator_sla_urgent_hours: float = 4.0
+    operator_sla_normal_hours: float = 24.0
     bot_run_mode: str = "polling"
     webhook_url: str | None = None
     webhook_path: str = "/webhook"
