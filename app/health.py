@@ -2,11 +2,10 @@ import asyncio
 
 from sqlalchemy import text
 
-from app.db import engine
-
-
 async def check_database(timeout_seconds: float = 2.0) -> dict[str, object]:
     try:
+        from app.db import engine
+
         async def _query():
             async with engine.connect() as conn:
                 await conn.execute(text("SELECT 1"))
