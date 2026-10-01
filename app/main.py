@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from decimal import Decimal
 from html import escape
 
@@ -18,6 +19,7 @@ from app.external_fitment import GenericHttpFitmentCatalog, HttpFitmentConfig
 from app.external_provider import GenericHttpProvider, HttpProviderConfig
 from app.external_vehicle import GenericHttpVehicleResolver, HttpVehicleResolverConfig
 from app.fitment import DemoFitmentCatalog
+from app.observability import configure_logging, log_event
 from app.price_alerts import check_all_price_alerts
 from app.providers import AutodocProvider, ExistProvider, MockProvider
 from app.query_parser import parse_search_query
@@ -79,6 +81,9 @@ class CatalogFlow(StatesGroup):
 
 
 app_settings = settings()
+configure_logging(app_settings.log_level)
+logger = logging.getLogger("zap.main")
+
 providers = [ExistProvider(), AutodocProvider()]
 
 if app_settings.demo_provider_enabled:
@@ -1485,11 +1490,25 @@ async def free_text(message: Message, state: FSMContext):
 
 async def price_alert_worker(bot: Bot) -> None:
     interval = max(60, app_settings.price_alert_interval_seconds)
+    log_event(
+        logger,
+        logging.INFO,
+        "price_alert_worker_started",
+        "price alert worker started",
+        interval_seconds=interval,
+    )
     while True:
         await asyncio.sleep(interval)
         try:
             hits = await check_all_price_alerts(search_service)
-        except Exception:
+        except Exception as exc:
+            log_event(
+                logger,
+                logging.ERROR,
+                "price_alert_worker_failure",
+                "price alert worker iteration failed",
+                error=type(exc).__name__,
+            )
             continue
 
         for hit in hits:
@@ -1516,6 +1535,16 @@ async def price_alert_worker(bot: Bot) -> None:
 
 async def main():
     await init_db()
+    log_event(
+        logger,
+        logging.INFO,
+        "application_start",
+        "Zap application starting",
+        run_mode=app_settings.bot_run_mode,
+        providers=[provider.name for provider in providers],
+        fitment_enabled=fitment_catalog is not None,
+        vehicle_api_enabled=app_settings.vehicle_api_enabled,
+    )
     bot = Bot(
         app_settings.bot_token,
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
