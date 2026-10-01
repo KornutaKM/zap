@@ -4,7 +4,6 @@ from html import escape
 
 from aiogram import Bot
 
-from app.db import update_price_alert
 from app.observability import log_event
 from app.price_alerts import check_all_price_alerts
 from app.search_service import PartsSearchService
@@ -17,6 +16,8 @@ async def run_price_alert_cycle(
     bot: Bot,
     search_service: PartsSearchService,
 ) -> int:
+    from app.db import update_price_alert
+
     hits = await check_all_price_alerts(search_service)
     delivered = 0
 
