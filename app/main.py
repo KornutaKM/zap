@@ -1014,6 +1014,7 @@ async def _add_work_parts_to_shopping(
     return added, missing
 
 
+@dp.message(Command("works"))
 @dp.message(F.text == BTN_WORKS)
 async def works_button(message: Message, state: FSMContext):
     vehicle = await get_vehicle(message.from_user.id)
@@ -1185,6 +1186,7 @@ async def show_shopping_list(message: Message, user_id: int) -> None:
     )
 
 
+@dp.message(Command("shopping"))
 @dp.message(F.text == BTN_SHOPPING)
 async def shopping_list_button(message: Message):
     await show_shopping_list(message, message.from_user.id)
@@ -1904,6 +1906,8 @@ async def main():
             BotCommand(command="search", description="Найти запчасть"),
             BotCommand(command="garage", description="Мой автомобиль"),
             BotCommand(command="garage_add", description="Добавить автомобиль"),
+            BotCommand(command="works", description="Подбор по списку работ"),
+            BotCommand(command="shopping", description="Список закупки"),
             BotCommand(command="status", description="Статус источников"),
         ]
     )
