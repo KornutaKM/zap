@@ -51,13 +51,23 @@ jobs:
 
       - name: SQLite database smoke test
         env:
-          BOT_TOKEN: test-token
           DATABASE_URL: "sqlite+aiosqlite:///smoke.db"
         run: python -c "import asyncio; from app.db import init_db; asyncio.run(init_db())"
 
+      - name: Alembic revision smoke test
+        env:
+          DATABASE_URL: "sqlite+aiosqlite:///smoke.db"
+        run: |
+          python - <<'PY'
+          import sqlite3
+          conn = sqlite3.connect("smoke.db")
+          revision = conn.execute("SELECT version_num FROM alembic_version").fetchone()
+          conn.close()
+          assert revision == ("20261001_0001",), revision
+          PY
+
       - name: PostgreSQL database smoke test
         env:
-          BOT_TOKEN: test-token
           DATABASE_URL: "postgresql+asyncpg://zap:zap@127.0.0.1:5432/zap_test"
         run: python -c "import asyncio; from app.db import init_db; asyncio.run(init_db())"
 
