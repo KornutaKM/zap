@@ -102,7 +102,8 @@ def results_keyboard(parent_id: str | None = None) -> InlineKeyboardMarkup:
 
 def vehicle_summary(vehicle: Vehicle) -> str:
     vin_text = f" · VIN …{escape(vehicle.vin[-4:])}" if vehicle.vin else ""
-    return f"🚗 <b>{escape(vehicle.brand)} {escape(vehicle.model)}</b> · {vehicle.year}{vin_text}"
+    year_text = f" · {vehicle.year}" if vehicle.year > 0 else ""
+    return f"🚗 <b>{escape(vehicle.brand)} {escape(vehicle.model)}</b>{year_text}{vin_text}"
 
 
 def offer_text(label: str, offer: Offer) -> str:
