@@ -33,6 +33,19 @@ class FavoritePart:
 
 
 @dataclass(slots=True, frozen=True)
+class PriceAlert:
+    id: int
+    telegram_user_id: int
+    brand: str
+    article: str
+    title: str
+    target_price: Decimal
+    last_price: Decimal | None = None
+    vehicle_id: int | None = None
+    is_active: bool = True
+
+
+@dataclass(slots=True, frozen=True)
 class Offer:
     provider: str
     brand: str
