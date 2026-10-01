@@ -8,7 +8,7 @@ from aiogram.types import (
 )
 
 from app.catalog import get_children, get_node
-from app.domain import Offer, Vehicle
+from app.domain import Offer, PartCandidate, Vehicle
 from app.vehicle_catalog import VehicleGeneration
 
 BTN_SEARCH = "🔎 Найти запчасть"
@@ -88,6 +88,41 @@ def generation_keyboard(generations: list[VehicleGeneration]) -> InlineKeyboardM
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+def parts_results_keyboard(
+    candidates: list[PartCandidate],
+    parent_id: str | None = None,
+) -> InlineKeyboardMarkup:
+    rows = [
+        [
+            InlineKeyboardButton(
+                text=f"{item.brand} · от {str(item.min_price)} ₽",
+                callback_data=f"part:{index}",
+            )
+        ]
+        for index, item in enumerate(candidates[:5])
+    ]
+    rows.append([
+        InlineKeyboardButton(text="🔎 Новый поиск", callback_data="action:search"),
+        InlineKeyboardButton(text="📚 Каталог", callback_data="cat:root"),
+    ])
+    if parent_id:
+        rows.append([InlineKeyboardButton(text="← К разделу", callback_data=f"cat:{parent_id}")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def part_detail_keyboard(index: int, parent_id: str | None = None) -> InlineKeyboardMarkup:
+    rows = [
+        [InlineKeyboardButton(text="← К вариантам", callback_data="partlist:back")],
+        [
+            InlineKeyboardButton(text="🔎 Новый поиск", callback_data="action:search"),
+            InlineKeyboardButton(text="📚 Каталог", callback_data="cat:root"),
+        ],
+    ]
+    if parent_id:
+        rows.append([InlineKeyboardButton(text="← К разделу", callback_data=f"cat:{parent_id}")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 def results_keyboard(parent_id: str | None = None) -> InlineKeyboardMarkup:
     rows = [
         [
@@ -113,3 +148,34 @@ def offer_text(label: str, offer: Offer) -> str:
         f"{escape(offer.brand)} · <code>{escape(offer.article)}</code>\n"
         f"{price} ₽ · {offer.delivery_days} дн. · {escape(offer.provider)}"
     )
+
+
+def candidate_text(index: int, candidate: PartCandidate) -> str:
+    price = f"{candidate.min_price:,.0f}".replace(",", " ")
+    return (
+        f"<b>{index}. {escape(candidate.brand)}</b> · "
+        f"<code>{escape(candidate.article)}</code>\n"
+        f"{escape(candidate.title)}\n"
+        f"от {price} ₽ · от {candidate.min_delivery_days} дн. · "
+        f"{len(candidate.offers)} предлож."
+    )
+
+
+def candidate_detail_text(candidate: PartCandidate) -> str:
+    header_price = f"{candidate.min_price:,.0f}".replace(",", " ")
+    lines = [
+        f"<b>{escape(candidate.brand)} · <code>{escape(candidate.article)}</code></b>",
+        escape(candidate.title),
+        f"Цена: от <b>{header_price} ₽</b>",
+        f"Предложений: <b>{len(candidate.offers)}</b>",
+        "",
+        "<b>Магазины</b>",
+    ]
+
+    for offer in candidate.offers[:8]:
+        price = f"{offer.price:,.0f}".replace(",", " ")
+        lines.append(
+            f"• {escape(offer.provider)} — <b>{price} ₽</b> · {offer.delivery_days} дн."
+        )
+
+    return "\n".join(lines)
