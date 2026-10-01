@@ -52,6 +52,9 @@ class PartCandidate:
     title: str
     quality: float
     offers: tuple[Offer, ...]
+    fitment_status: str = "unverified"
+    oe_numbers: tuple[str, ...] = ()
+    fitment_reason: str = ""
 
     @property
     def cheapest_offer(self) -> Offer:
