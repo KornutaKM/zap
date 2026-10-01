@@ -490,16 +490,21 @@ async def refresh_order_checkout_status(
 
         adapter = registry.for_provider(group.provider)
         result = await adapter.get_status(group.external_order_id)
+        effective_status = (
+            group.status
+            if result.status == "unknown"
+            else result.status
+        )
         updated = await update_supplier_group_checkout(
             order_id,
             group.id,
-            status=result.status,
+            status=effective_status,
             checkout_mode=result.mode,
             external_order_id=group.external_order_id,
             checkout_url=result.checkout_url or group.checkout_url,
             last_error=result.error,
         )
-        statuses.append(updated.status if updated is not None else "failed")
+        statuses.append(updated.status if updated is not None else group.status)
 
     if statuses and all(status in {"completed"} for status in statuses):
         target = "completed"
