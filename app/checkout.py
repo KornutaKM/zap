@@ -189,7 +189,7 @@ class GenericHttpCheckoutAdapter:
                     data = await response.json(content_type=None)
         except (aiohttp.ClientError, TimeoutError, ValueError) as exc:
             return CheckoutResult(
-                status="failed",
+                status="unknown",
                 mode="api",
                 external_order_id=external_order_id,
                 error=type(exc).__name__,
@@ -197,7 +197,7 @@ class GenericHttpCheckoutAdapter:
 
         if not isinstance(data, dict):
             return CheckoutResult(
-                status="failed",
+                status="unknown",
                 mode="api",
                 external_order_id=external_order_id,
                 error="invalid_payload",
@@ -211,7 +211,7 @@ class GenericHttpCheckoutAdapter:
             "completed",
             "cancelled",
             "failed",
-        } else "pending"
+        } else "unknown"
         return CheckoutResult(
             status=status,
             mode="api",
