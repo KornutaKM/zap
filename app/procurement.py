@@ -6,6 +6,12 @@ from app.domain import Offer, PartCandidate
 
 
 @dataclass(frozen=True, slots=True)
+class ProviderCommercialRule:
+    shipping_fee: Decimal
+    free_threshold: Decimal
+
+
+@dataclass(frozen=True, slots=True)
 class PurchaseRequest:
     brand: str
     article: str
@@ -39,12 +45,24 @@ DEFAULT_SHIPPING = Decimal("500")
 
 
 def _provider_shipping(
+    provider: str,
     subtotal: Decimal,
     *,
     shipping_fee: Decimal = DEFAULT_SHIPPING,
     free_threshold: Decimal = Decimal("10000"),
+    provider_rules: dict[str, ProviderCommercialRule] | None = None,
 ) -> Decimal:
-    return Decimal("0") if subtotal >= free_threshold else shipping_fee
+    rule = None
+    if provider_rules:
+        rule = provider_rules.get(provider.casefold())
+
+    effective_fee = rule.shipping_fee if rule else shipping_fee
+    effective_threshold = rule.free_threshold if rule else free_threshold
+    return (
+        Decimal("0")
+        if subtotal >= effective_threshold
+        else effective_fee
+    )
 
 
 def _build_plan(
@@ -53,6 +71,7 @@ def _build_plan(
     choices: list[PurchaseChoice],
     shipping_fee: Decimal,
     free_threshold: Decimal,
+    provider_rules: dict[str, ProviderCommercialRule] | None,
 ) -> PurchasePlan:
     per_provider: dict[str, Decimal] = {}
     item_total = Decimal("0")
@@ -69,11 +88,13 @@ def _build_plan(
     shipping_total = sum(
         (
             _provider_shipping(
+                provider,
                 subtotal,
                 shipping_fee=shipping_fee,
                 free_threshold=free_threshold,
+                provider_rules=provider_rules,
             )
-            for subtotal in per_provider.values()
+            for provider, subtotal in per_provider.items()
         ),
         start=Decimal("0"),
     )
@@ -96,6 +117,7 @@ def optimize_purchase(
     shipping_fee: Decimal = DEFAULT_SHIPPING,
     free_threshold: Decimal = Decimal("10000"),
     combination_limit: int = 50000,
+    provider_rules: dict[str, ProviderCommercialRule] | None = None,
 ) -> list[PurchasePlan]:
     option_lists: list[list[PurchaseChoice]] = []
     for request in requests:
@@ -131,6 +153,7 @@ def optimize_purchase(
             cheapest_choices,
             shipping_fee,
             free_threshold,
+            provider_rules,
         ),
         _build_plan(
             "Самая быстрая сборка",
@@ -138,6 +161,7 @@ def optimize_purchase(
             fastest_choices,
             shipping_fee,
             free_threshold,
+            provider_rules,
         ),
     ]
 
