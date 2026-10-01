@@ -14,13 +14,14 @@ from aiogram.types import BotCommand, CallbackQuery, Message
 from app.bootstrap import build_app_services
 from app.catalog import get_node
 from app.config import settings
-from app.db import add_favorite, add_shopping_item, change_shopping_quantity, clear_shopping_list, create_price_alert, delete_price_alert, delete_purchase_quote, delete_vehicle, get_customer_order, get_purchase_quote, get_search_history_item, get_vehicle, get_vehicle_by_id, init_db, list_customer_orders, list_favorites, list_price_alerts, list_price_history, list_purchase_quotes, list_recent_searches, list_shopping_items, list_vehicles, record_price_observations, record_search, remove_favorite, remove_shopping_item, save_purchase_quote, save_vehicle, set_active_vehicle, set_vehicle_modification, update_vehicle_from_resolution
+from app.db import add_favorite, add_shopping_item, change_shopping_quantity, clear_shopping_list, create_price_alert, delete_delivery_profile, delete_price_alert, delete_purchase_quote, delete_vehicle, get_customer_order, get_delivery_profile, get_purchase_quote, get_search_history_item, get_vehicle, get_vehicle_by_id, init_db, list_customer_orders, list_favorites, list_price_alerts, list_price_history, list_purchase_quotes, list_recent_searches, list_shopping_items, list_vehicles, record_price_observations, record_search, remove_favorite, remove_shopping_item, save_delivery_profile, save_purchase_quote, save_vehicle, set_active_vehicle, set_vehicle_modification, update_vehicle_from_resolution
+from app.delivery import DeliveryInput, normalize_phone, validate_delivery_input
 from app.domain import Vehicle
 from app.alert_worker import price_alert_loop
 from app.health import readiness
 from app.middleware import RateLimitMiddleware
 from app.observability import configure_logging, log_event
-from app.orders import cancel_local_order, checkout_ready_order, confirm_revalidated_prices, create_order_from_plan, mark_manual_group_placed, refresh_order_checkout_status, revalidate_order
+from app.orders import apply_delivery_profile_to_order, cancel_local_order, checkout_ready_order, confirm_revalidated_prices, create_order_from_plan, mark_manual_group_placed, refresh_order_checkout_status, request_external_order_cancellation, revalidate_order
 from app.commercial_rules import parse_provider_rules
 from app.price_history import summarize_price_history
 from app.procurement import PurchaseRequest, compare_purchase_plans, deserialize_purchase_plan, optimize_purchase, requests_from_plan, serialize_purchase_plan
@@ -33,6 +34,7 @@ from app.ui import (
     BTN_ARTICLE,
     BTN_CANCEL,
     BTN_CATALOG,
+    BTN_DELIVERY,
     BTN_FAVORITES,
     BTN_GARAGE,
     BTN_HISTORY,
@@ -40,6 +42,7 @@ from app.ui import (
     BTN_ORDERS,
     BTN_QUOTES,
     BTN_SEARCH,
+    BTN_SKIP,
     BTN_SERVICE,
     BTN_SHOPPING,
     BTN_WORKS,
@@ -48,6 +51,8 @@ from app.ui import (
     cancel_menu,
     catalog_keyboard,
     delete_vehicle_confirm_keyboard,
+    delivery_profile_keyboard,
+    delivery_profile_text,
     favorites_keyboard,
     garage_keyboard,
     generation_keyboard,
@@ -56,6 +61,7 @@ from app.ui import (
     modification_keyboard,
     order_detail_keyboard,
     order_detail_text,
+    optional_input_menu,
     orders_keyboard,
     candidate_detail_text,
     candidate_text,
@@ -103,6 +109,16 @@ class CatalogFlow(StatesGroup):
 
 class WorkFlow(StatesGroup):
     text = State()
+
+
+class DeliveryFlow(StatesGroup):
+    full_name = State()
+    phone = State()
+    country = State()
+    city = State()
+    address = State()
+    postal_code = State()
+    email = State()
 
 
 app_settings = settings()
@@ -491,6 +507,189 @@ async def cancel(message: Message, state: FSMContext):
         "Отменено.",
         reply_markup=main_menu(vehicle is not None),
     )
+
+
+async def start_delivery_wizard(
+    message: Message,
+    state: FSMContext,
+    *,
+    pending_order_id: int | None = None,
+) -> None:
+    await state.clear()
+    if pending_order_id is not None:
+        await state.update_data(pending_order_id=pending_order_id)
+    await state.set_state(DeliveryFlow.full_name)
+    await message.answer(
+        "Имя и фамилия получателя?",
+        reply_markup=cancel_menu(),
+    )
+
+
+@dp.message(Command("delivery"))
+@dp.message(F.text == BTN_DELIVERY)
+async def delivery_profile_button(message: Message, state: FSMContext):
+    profile = await get_delivery_profile(message.from_user.id)
+    if profile is None:
+        await start_delivery_wizard(message, state)
+        return
+
+    await state.clear()
+    await message.answer(
+        delivery_profile_text(profile),
+        reply_markup=delivery_profile_keyboard(),
+    )
+
+
+@dp.callback_query(F.data == "delivery:edit")
+async def delivery_edit_callback(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    if callback.message is None:
+        return
+    await start_delivery_wizard(callback.message, state)
+
+
+@dp.callback_query(F.data == "delivery:delete")
+async def delivery_delete_callback(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    if callback.message is None:
+        return
+    await delete_delivery_profile(callback.from_user.id)
+    await state.clear()
+    await callback.message.edit_text(
+        "Профиль доставки удалён. Snapshot уже созданных заказов не изменён."
+    )
+
+
+@dp.message(DeliveryFlow.full_name, F.text)
+async def delivery_full_name(message: Message, state: FSMContext):
+    value = " ".join((message.text or "").strip().split())
+    if len(value) < 3:
+        await message.answer("Укажите имя получателя полностью.")
+        return
+    await state.update_data(delivery_full_name=value)
+    await state.set_state(DeliveryFlow.phone)
+    await message.answer(
+        "Телефон получателя? Например: <code>+7 999 123-45-67</code>"
+    )
+
+
+@dp.message(DeliveryFlow.phone, F.text)
+async def delivery_phone(message: Message, state: FSMContext):
+    try:
+        phone = normalize_phone(message.text or "")
+    except ValueError as exc:
+        await message.answer(escape(str(exc)))
+        return
+    await state.update_data(delivery_phone=phone)
+    await state.set_state(DeliveryFlow.country)
+    await message.answer("Страна доставки?")
+
+
+@dp.message(DeliveryFlow.country, F.text)
+async def delivery_country(message: Message, state: FSMContext):
+    value = " ".join((message.text or "").strip().split())
+    if not value:
+        await message.answer("Укажите страну.")
+        return
+    await state.update_data(delivery_country=value)
+    await state.set_state(DeliveryFlow.city)
+    await message.answer("Город?")
+
+
+@dp.message(DeliveryFlow.city, F.text)
+async def delivery_city(message: Message, state: FSMContext):
+    value = " ".join((message.text or "").strip().split())
+    if not value:
+        await message.answer("Укажите город.")
+        return
+    await state.update_data(delivery_city=value)
+    await state.set_state(DeliveryFlow.address)
+    await message.answer("Адрес доставки: улица, дом, квартира/офис?")
+
+
+@dp.message(DeliveryFlow.address, F.text)
+async def delivery_address(message: Message, state: FSMContext):
+    value = " ".join((message.text or "").strip().split())
+    if len(value) < 4:
+        await message.answer("Укажите более полный адрес.")
+        return
+    await state.update_data(delivery_address=value)
+    await state.set_state(DeliveryFlow.postal_code)
+    await message.answer(
+        "Почтовый индекс? Можно пропустить.",
+        reply_markup=optional_input_menu(),
+    )
+
+
+@dp.message(DeliveryFlow.postal_code, F.text)
+async def delivery_postal_code(message: Message, state: FSMContext):
+    value = None if message.text == BTN_SKIP else (message.text or "").strip()
+    await state.update_data(delivery_postal_code=value or None)
+    await state.set_state(DeliveryFlow.email)
+    await message.answer(
+        "Email для уведомлений магазина? Можно пропустить.",
+        reply_markup=optional_input_menu(),
+    )
+
+
+@dp.message(DeliveryFlow.email, F.text)
+async def delivery_email(message: Message, state: FSMContext):
+    email = None if message.text == BTN_SKIP else (message.text or "").strip()
+    data = await state.get_data()
+
+    try:
+        normalized = validate_delivery_input(
+            DeliveryInput(
+                full_name=data.get("delivery_full_name", ""),
+                phone=data.get("delivery_phone", ""),
+                country=data.get("delivery_country", ""),
+                city=data.get("delivery_city", ""),
+                address_line1=data.get("delivery_address", ""),
+                postal_code=data.get("delivery_postal_code"),
+                email=email or None,
+            )
+        )
+    except ValueError as exc:
+        await message.answer(
+            escape(str(exc)),
+            reply_markup=optional_input_menu(),
+        )
+        return
+
+    profile = await save_delivery_profile(
+        message.from_user.id,
+        full_name=normalized.full_name,
+        phone=normalized.phone,
+        country=normalized.country,
+        city=normalized.city,
+        address_line1=normalized.address_line1,
+        postal_code=normalized.postal_code,
+        email=normalized.email,
+        address_line2=normalized.address_line2,
+        comment=normalized.comment,
+    )
+    pending_order_id = data.get("pending_order_id")
+    await state.clear()
+
+    await message.answer(
+        delivery_profile_text(profile),
+        reply_markup=delivery_profile_keyboard(),
+    )
+
+    if pending_order_id is not None:
+        updated = await apply_delivery_profile_to_order(
+            message.from_user.id,
+            int(pending_order_id),
+            profile,
+        )
+        if updated is not None:
+            await message.answer("Данные доставки применены к заказу.")
+            await show_order(
+                message,
+                message.from_user.id,
+                int(pending_order_id),
+                edit=False,
+            )
 
 
 @dp.message(Command("garage"))
@@ -1530,6 +1729,7 @@ async def order_create_plan_callback(callback: CallbackQuery, state: FSMContext)
         return
 
     plan = deserialize_purchase_plan(raw_plans[index])
+    delivery_profile = await get_delivery_profile(callback.from_user.id)
     order = await create_order_from_plan(
         callback.from_user.id,
         plan,
@@ -1537,6 +1737,7 @@ async def order_create_plan_callback(callback: CallbackQuery, state: FSMContext)
         shipping_fee=app_settings.procurement_shipping_fee,
         free_threshold=app_settings.procurement_free_shipping_threshold,
         provider_rules=provider_commercial_rules,
+        delivery_profile=delivery_profile,
     )
     await show_order(
         callback.message,
@@ -1569,6 +1770,7 @@ async def order_create_quote_callback(callback: CallbackQuery):
         await callback.message.answer("Snapshot расчёта повреждён.")
         return
 
+    delivery_profile = await get_delivery_profile(callback.from_user.id)
     order = await create_order_from_plan(
         callback.from_user.id,
         plan,
@@ -1577,11 +1779,49 @@ async def order_create_quote_callback(callback: CallbackQuery):
         shipping_fee=app_settings.procurement_shipping_fee,
         free_threshold=app_settings.procurement_free_shipping_threshold,
         provider_rules=provider_commercial_rules,
+        delivery_profile=delivery_profile,
     )
     await show_order(
         callback.message,
         callback.from_user.id,
         order.id,
+        edit=True,
+    )
+
+
+@dp.callback_query(F.data.startswith("order:delivery:"))
+async def order_delivery_callback(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    if callback.message is None:
+        return
+
+    try:
+        order_id = int((callback.data or "").rsplit(":", 1)[1])
+    except ValueError:
+        return
+
+    profile = await get_delivery_profile(callback.from_user.id)
+    if profile is None:
+        await start_delivery_wizard(
+            callback.message,
+            state,
+            pending_order_id=order_id,
+        )
+        return
+
+    updated = await apply_delivery_profile_to_order(
+        callback.from_user.id,
+        order_id,
+        profile,
+    )
+    if updated is None:
+        await callback.message.answer("Заказ не найден.")
+        return
+
+    await show_order(
+        callback.message,
+        callback.from_user.id,
+        order_id,
         edit=True,
     )
 
@@ -1653,6 +1893,34 @@ async def order_confirm_prices_callback(callback: CallbackQuery):
         return
 
     updated = await confirm_revalidated_prices(callback.from_user.id, order_id)
+    if updated is None:
+        await callback.message.answer("Заказ не найден.")
+        return
+
+    await show_order(
+        callback.message,
+        callback.from_user.id,
+        order_id,
+        edit=True,
+    )
+
+
+@dp.callback_query(F.data.startswith("order:cancel_external:"))
+async def order_external_cancel_callback(callback: CallbackQuery):
+    await callback.answer()
+    if callback.message is None:
+        return
+
+    try:
+        order_id = int((callback.data or "").rsplit(":", 1)[1])
+    except ValueError:
+        return
+
+    updated = await request_external_order_cancellation(
+        callback.from_user.id,
+        order_id,
+        checkout_registry,
+    )
     if updated is None:
         await callback.message.answer("Заказ не найден.")
         return
@@ -2576,6 +2844,7 @@ async def main():
             BotCommand(command="shopping", description="Список закупки"),
             BotCommand(command="quotes", description="Сохранённые расчёты"),
             BotCommand(command="orders", description="Мои заказы"),
+            BotCommand(command="delivery", description="Данные доставки"),
             BotCommand(command="status", description="Статус источников"),
         ]
     )
