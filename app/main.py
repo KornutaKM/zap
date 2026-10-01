@@ -14,18 +14,20 @@ from aiogram.types import BotCommand, CallbackQuery, Message
 from app.bootstrap import build_app_services
 from app.catalog import get_node
 from app.config import settings
-from app.db import add_favorite, add_shopping_item, change_shopping_quantity, clear_shopping_list, create_price_alert, delete_delivery_profile, delete_price_alert, delete_purchase_quote, delete_vehicle, get_customer_order, get_delivery_profile, get_purchase_quote, get_search_history_item, get_vehicle, get_vehicle_by_id, init_db, list_customer_orders, list_favorites, list_price_alerts, list_price_history, list_purchase_quotes, list_recent_searches, list_shopping_items, list_vehicles, record_price_observations, record_search, remove_favorite, remove_shopping_item, save_delivery_profile, save_purchase_quote, save_vehicle, set_active_vehicle, set_vehicle_modification, update_vehicle_from_resolution
+from app.db import add_favorite, add_shopping_item, append_order_case_note, assign_order_case, change_shopping_quantity, clear_shopping_list, create_order_case, create_price_alert, delete_delivery_profile, delete_price_alert, delete_purchase_quote, delete_vehicle, get_customer_order, get_delivery_profile, get_order_case, get_order_for_operator, get_purchase_quote, get_search_history_item, get_vehicle, get_vehicle_by_id, init_db, list_customer_orders, list_favorites, list_operator_order_cases, list_price_alerts, list_price_history, list_purchase_quotes, list_recent_searches, list_shopping_items, list_user_order_cases, list_vehicles, record_price_observations, record_search, remove_favorite, remove_shopping_item, resolve_order_case, save_delivery_profile, save_purchase_quote, save_vehicle, set_active_vehicle, set_vehicle_modification, update_vehicle_from_resolution
 from app.delivery import DeliveryInput, normalize_phone, validate_delivery_input
 from app.domain import Vehicle
 from app.alert_worker import price_alert_loop
 from app.health import readiness
 from app.middleware import RateLimitMiddleware
 from app.observability import configure_logging, log_event
+from app.operators import is_operator, parse_operator_user_ids
 from app.orders import apply_delivery_profile_to_order, cancel_local_order, checkout_ready_order, confirm_revalidated_prices, create_order_from_plan, mark_manual_group_placed, refresh_order_checkout_status, request_external_order_cancellation, revalidate_order
 from app.commercial_rules import parse_provider_rules
 from app.price_history import summarize_price_history
 from app.procurement import PurchaseRequest, compare_purchase_plans, deserialize_purchase_plan, optimize_purchase, requests_from_plan, serialize_purchase_plan
 from app.query_parser import parse_search_query
+from app.support_cases import can_request_return, normalize_case_message
 from app.rate_limit import build_rate_limiter
 from app.runtime import run_bot
 from app.ui import (
@@ -33,6 +35,7 @@ from app.ui import (
     BTN_ALERTS,
     BTN_ARTICLE,
     BTN_CANCEL,
+    BTN_CASES,
     BTN_CATALOG,
     BTN_DELIVERY,
     BTN_FAVORITES,
@@ -54,6 +57,10 @@ from app.ui import (
     delivery_profile_keyboard,
     delivery_profile_text,
     external_cancel_confirm_keyboard,
+    operator_case_keyboard,
+    operator_cases_keyboard,
+    operator_order_keyboard,
+    order_case_text,
     favorites_keyboard,
     garage_keyboard,
     generation_keyboard,
@@ -64,6 +71,8 @@ from app.ui import (
     order_detail_text,
     optional_input_menu,
     orders_keyboard,
+    user_case_keyboard,
+    user_cases_keyboard,
     candidate_detail_text,
     candidate_text,
     part_detail_keyboard,
@@ -122,6 +131,14 @@ class DeliveryFlow(StatesGroup):
     email = State()
 
 
+class CaseFlow(StatesGroup):
+    issue = State()
+    return_reason = State()
+    user_note = State()
+    operator_note = State()
+    operator_resolution = State()
+
+
 app_settings = settings()
 configure_logging(app_settings.log_level)
 logger = logging.getLogger("zap.main")
@@ -135,6 +152,7 @@ checkout_registry = services.checkout_registry
 provider_commercial_rules = parse_provider_rules(
     app_settings.procurement_provider_rules_json
 )
+operator_user_ids = parse_operator_user_ids(app_settings.operator_user_ids)
 
 dp = Dispatcher()
 
@@ -1661,6 +1679,506 @@ async def show_order(
         await message.answer(text, reply_markup=keyboard)
 
 
+async def show_user_case(
+    message: Message,
+    user_id: int,
+    case_id: int,
+    *,
+    edit: bool = False,
+) -> None:
+    loaded = await get_order_case(case_id)
+    if loaded is None or loaded[0].telegram_user_id != user_id:
+        if not edit:
+            await message.answer("Обращение не найдено.")
+        return
+
+    case, notes = loaded
+    text = order_case_text(case, notes)
+    keyboard = user_case_keyboard(case)
+    if edit:
+        await message.edit_text(text, reply_markup=keyboard)
+    else:
+        await message.answer(text, reply_markup=keyboard)
+
+
+@dp.message(Command("cases"))
+@dp.message(F.text == BTN_CASES)
+async def cases_button(message: Message):
+    cases = await list_user_order_cases(message.from_user.id)
+    if not cases:
+        await message.answer(
+            "Обращений пока нет. Открыть обращение можно из карточки заказа.",
+            reply_markup=main_menu((await get_vehicle(message.from_user.id)) is not None),
+        )
+        return
+
+    await message.answer(
+        "<b>Мои обращения</b>",
+        reply_markup=user_cases_keyboard(cases),
+    )
+
+
+@dp.callback_query(F.data == "case:list")
+async def case_list_callback(callback: CallbackQuery):
+    await callback.answer()
+    if callback.message is None:
+        return
+    cases = await list_user_order_cases(callback.from_user.id)
+    if not cases:
+        await callback.message.edit_text("Обращений пока нет.")
+        return
+    await callback.message.edit_text(
+        "<b>Мои обращения</b>",
+        reply_markup=user_cases_keyboard(cases),
+    )
+
+
+@dp.callback_query(F.data.startswith("case:open:"))
+async def case_open_callback(callback: CallbackQuery):
+    await callback.answer()
+    if callback.message is None:
+        return
+    try:
+        case_id = int((callback.data or "").rsplit(":", 1)[1])
+    except ValueError:
+        return
+    await show_user_case(
+        callback.message,
+        callback.from_user.id,
+        case_id,
+        edit=True,
+    )
+
+
+@dp.callback_query(F.data.startswith("case:support:"))
+async def case_support_callback(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    if callback.message is None:
+        return
+    try:
+        order_id = int((callback.data or "").rsplit(":", 1)[1])
+    except ValueError:
+        return
+
+    if await get_customer_order(callback.from_user.id, order_id) is None:
+        await callback.message.answer("Заказ не найден.")
+        return
+
+    await state.clear()
+    await state.update_data(case_order_id=order_id)
+    await state.set_state(CaseFlow.issue)
+    await callback.message.answer(
+        "Опишите проблему с заказом. Сообщение попадёт в очередь поддержки.",
+        reply_markup=cancel_menu(),
+    )
+
+
+@dp.message(CaseFlow.issue, F.text)
+async def case_issue_message(message: Message, state: FSMContext):
+    try:
+        body = normalize_case_message(message.text or "")
+    except ValueError as exc:
+        await message.answer(escape(str(exc)))
+        return
+
+    data = await state.get_data()
+    order_id = data.get("case_order_id")
+    if order_id is None:
+        await state.clear()
+        return
+
+    case = await create_order_case(
+        message.from_user.id,
+        int(order_id),
+        case_type="support",
+        summary=body[:180],
+        priority="normal",
+        initial_note=body,
+        author_role="user",
+        author_user_id=message.from_user.id,
+    )
+    await state.clear()
+    if case is None:
+        await message.answer("Не удалось создать обращение: заказ не найден.")
+        return
+    await show_user_case(message, message.from_user.id, case.id)
+
+
+@dp.callback_query(F.data.startswith("case:return:"))
+async def case_return_callback(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    if callback.message is None:
+        return
+    try:
+        order_id = int((callback.data or "").rsplit(":", 1)[1])
+    except ValueError:
+        return
+
+    loaded = await get_customer_order(callback.from_user.id, order_id)
+    if loaded is None:
+        await callback.message.answer("Заказ не найден.")
+        return
+    order = loaded[0]
+    if not can_request_return(order):
+        await callback.message.answer(
+            "Запрос возврата доступен только для оформленного или завершённого заказа."
+        )
+        return
+
+    await state.clear()
+    await state.update_data(case_order_id=order_id)
+    await state.set_state(CaseFlow.return_reason)
+    await callback.message.answer(
+        "Опишите причину возврата. Это создаст обращение на ручную обработку; "
+        "деньги автоматически не возвращаются.",
+        reply_markup=cancel_menu(),
+    )
+
+
+@dp.message(CaseFlow.return_reason, F.text)
+async def case_return_reason(message: Message, state: FSMContext):
+    try:
+        body = normalize_case_message(message.text or "")
+    except ValueError as exc:
+        await message.answer(escape(str(exc)))
+        return
+
+    data = await state.get_data()
+    order_id = data.get("case_order_id")
+    if order_id is None:
+        await state.clear()
+        return
+
+    loaded = await get_customer_order(message.from_user.id, int(order_id))
+    if loaded is None or not can_request_return(loaded[0]):
+        await state.clear()
+        await message.answer("Этот заказ сейчас нельзя отправить на возврат.")
+        return
+
+    case = await create_order_case(
+        message.from_user.id,
+        int(order_id),
+        case_type="return",
+        summary="Запрос на возврат",
+        priority="normal",
+        initial_note=body,
+        author_role="user",
+        author_user_id=message.from_user.id,
+    )
+    await state.clear()
+    if case is None:
+        await message.answer("Не удалось создать запрос возврата.")
+        return
+    await show_user_case(message, message.from_user.id, case.id)
+
+
+@dp.callback_query(F.data.startswith("case:note:"))
+async def case_note_callback(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    if callback.message is None:
+        return
+    try:
+        case_id = int((callback.data or "").rsplit(":", 1)[1])
+    except ValueError:
+        return
+
+    loaded = await get_order_case(case_id)
+    if (
+        loaded is None
+        or loaded[0].telegram_user_id != callback.from_user.id
+        or loaded[0].status == "resolved"
+    ):
+        await callback.message.answer("Обращение недоступно для изменения.")
+        return
+
+    await state.clear()
+    await state.update_data(case_id=case_id)
+    await state.set_state(CaseFlow.user_note)
+    await callback.message.answer(
+        "Добавьте сообщение к обращению.",
+        reply_markup=cancel_menu(),
+    )
+
+
+@dp.message(CaseFlow.user_note, F.text)
+async def case_note_message(message: Message, state: FSMContext):
+    try:
+        body = normalize_case_message(message.text or "")
+    except ValueError as exc:
+        await message.answer(escape(str(exc)))
+        return
+
+    data = await state.get_data()
+    case_id = data.get("case_id")
+    if case_id is None:
+        await state.clear()
+        return
+
+    loaded = await get_order_case(int(case_id))
+    if (
+        loaded is None
+        or loaded[0].telegram_user_id != message.from_user.id
+        or loaded[0].status == "resolved"
+    ):
+        await state.clear()
+        await message.answer("Обращение недоступно для изменения.")
+        return
+
+    await append_order_case_note(
+        int(case_id),
+        author_user_id=message.from_user.id,
+        author_role="user",
+        body=body,
+    )
+    await state.clear()
+    await show_user_case(message, message.from_user.id, int(case_id))
+
+
+async def show_operator_case(
+    message: Message,
+    operator_user_id: int,
+    case_id: int,
+    *,
+    edit: bool = False,
+) -> None:
+    if not is_operator(operator_user_id, operator_user_ids):
+        if not edit:
+            await message.answer("Недоступно.")
+        return
+
+    loaded = await get_order_case(case_id)
+    if loaded is None:
+        if not edit:
+            await message.answer("Кейс не найден.")
+        return
+
+    case, notes = loaded
+    text = order_case_text(case, notes, operator_view=True)
+    keyboard = operator_case_keyboard(case)
+    if edit:
+        await message.edit_text(text, reply_markup=keyboard)
+    else:
+        await message.answer(text, reply_markup=keyboard)
+
+
+@dp.message(Command("ops"))
+async def operator_queue(message: Message):
+    if not is_operator(message.from_user.id, operator_user_ids):
+        await message.answer("Недоступно.")
+        return
+
+    cases = await list_operator_order_cases()
+    if not cases:
+        await message.answer("Открытых кейсов нет.")
+        return
+    await message.answer(
+        "<b>Операторская очередь</b>",
+        reply_markup=operator_cases_keyboard(cases),
+    )
+
+
+@dp.callback_query(F.data == "ops:list")
+async def operator_queue_callback(callback: CallbackQuery):
+    await callback.answer()
+    if callback.message is None:
+        return
+    if not is_operator(callback.from_user.id, operator_user_ids):
+        await callback.message.answer("Недоступно.")
+        return
+
+    cases = await list_operator_order_cases()
+    if not cases:
+        await callback.message.edit_text("Открытых кейсов нет.")
+        return
+    await callback.message.edit_text(
+        "<b>Операторская очередь</b>",
+        reply_markup=operator_cases_keyboard(cases),
+    )
+
+
+@dp.callback_query(F.data.startswith("ops:case:"))
+async def operator_case_callback(callback: CallbackQuery):
+    await callback.answer()
+    if callback.message is None:
+        return
+    if not is_operator(callback.from_user.id, operator_user_ids):
+        await callback.message.answer("Недоступно.")
+        return
+    try:
+        case_id = int((callback.data or "").rsplit(":", 1)[1])
+    except ValueError:
+        return
+    await show_operator_case(
+        callback.message,
+        callback.from_user.id,
+        case_id,
+        edit=True,
+    )
+
+
+@dp.callback_query(F.data.startswith("ops:assign:"))
+async def operator_assign_callback(callback: CallbackQuery):
+    await callback.answer()
+    if callback.message is None:
+        return
+    if not is_operator(callback.from_user.id, operator_user_ids):
+        await callback.message.answer("Недоступно.")
+        return
+    try:
+        case_id = int((callback.data or "").rsplit(":", 1)[1])
+    except ValueError:
+        return
+
+    await assign_order_case(case_id, callback.from_user.id)
+    await show_operator_case(
+        callback.message,
+        callback.from_user.id,
+        case_id,
+        edit=True,
+    )
+
+
+@dp.callback_query(F.data.startswith("ops:note:"))
+async def operator_note_callback(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    if callback.message is None:
+        return
+    if not is_operator(callback.from_user.id, operator_user_ids):
+        await callback.message.answer("Недоступно.")
+        return
+    try:
+        case_id = int((callback.data or "").rsplit(":", 1)[1])
+    except ValueError:
+        return
+
+    await state.clear()
+    await state.update_data(case_id=case_id)
+    await state.set_state(CaseFlow.operator_note)
+    await callback.message.answer(
+        "Введите внутреннюю заметку. Пользователь её не увидит.",
+        reply_markup=cancel_menu(),
+    )
+
+
+@dp.message(CaseFlow.operator_note, F.text)
+async def operator_note_message(message: Message, state: FSMContext):
+    if not is_operator(message.from_user.id, operator_user_ids):
+        await state.clear()
+        await message.answer("Недоступно.")
+        return
+    try:
+        body = normalize_case_message(message.text or "")
+    except ValueError as exc:
+        await message.answer(escape(str(exc)))
+        return
+
+    data = await state.get_data()
+    case_id = data.get("case_id")
+    if case_id is None:
+        await state.clear()
+        return
+
+    await append_order_case_note(
+        int(case_id),
+        author_user_id=message.from_user.id,
+        author_role="operator_internal",
+        body=body,
+    )
+    await state.clear()
+    await show_operator_case(message, message.from_user.id, int(case_id))
+
+
+@dp.callback_query(F.data.startswith("ops:resolve:"))
+async def operator_resolve_callback(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    if callback.message is None:
+        return
+    if not is_operator(callback.from_user.id, operator_user_ids):
+        await callback.message.answer("Недоступно.")
+        return
+    try:
+        case_id = int((callback.data or "").rsplit(":", 1)[1])
+    except ValueError:
+        return
+
+    await state.clear()
+    await state.update_data(case_id=case_id)
+    await state.set_state(CaseFlow.operator_resolution)
+    await callback.message.answer(
+        "Введите итоговую резолюцию. Её увидит пользователь.",
+        reply_markup=cancel_menu(),
+    )
+
+
+@dp.message(CaseFlow.operator_resolution, F.text)
+async def operator_resolution_message(message: Message, state: FSMContext):
+    if not is_operator(message.from_user.id, operator_user_ids):
+        await state.clear()
+        await message.answer("Недоступно.")
+        return
+    try:
+        resolution = normalize_case_message(message.text or "", max_length=900)
+    except ValueError as exc:
+        await message.answer(escape(str(exc)))
+        return
+
+    data = await state.get_data()
+    case_id = data.get("case_id")
+    if case_id is None:
+        await state.clear()
+        return
+
+    case = await resolve_order_case(
+        int(case_id),
+        message.from_user.id,
+        resolution,
+    )
+    await state.clear()
+    if case is None:
+        await message.answer("Кейс не найден.")
+        return
+
+    try:
+        await message.bot.send_message(
+            case.telegram_user_id,
+            f"<b>Обращение #{case.id} закрыто</b>\n\n"
+            f"{escape(resolution)}",
+        )
+    except Exception:
+        pass
+
+    await show_operator_case(message, message.from_user.id, case.id)
+
+
+@dp.callback_query(F.data.startswith("ops:order:"))
+async def operator_order_callback(callback: CallbackQuery):
+    await callback.answer()
+    if callback.message is None:
+        return
+    if not is_operator(callback.from_user.id, operator_user_ids):
+        await callback.message.answer("Недоступно.")
+        return
+
+    parts = (callback.data or "").split(":")
+    if len(parts) != 4:
+        return
+    try:
+        order_id = int(parts[2])
+        case_id = int(parts[3])
+    except ValueError:
+        return
+
+    loaded = await get_order_for_operator(order_id)
+    if loaded is None:
+        await callback.message.answer("Заказ не найден.")
+        return
+    order, groups, lines, events = loaded
+    await callback.message.edit_text(
+        order_detail_text(order, groups, lines, events),
+        reply_markup=operator_order_keyboard(case_id),
+    )
+
+
 @dp.message(Command("orders"))
 @dp.message(F.text == BTN_ORDERS)
 async def orders_button(message: Message):
@@ -2870,6 +3388,7 @@ async def main():
             BotCommand(command="shopping", description="Список закупки"),
             BotCommand(command="quotes", description="Сохранённые расчёты"),
             BotCommand(command="orders", description="Мои заказы"),
+            BotCommand(command="cases", description="Мои обращения"),
             BotCommand(command="delivery", description="Данные доставки"),
             BotCommand(command="status", description="Статус источников"),
         ]
