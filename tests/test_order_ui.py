@@ -66,3 +66,14 @@ def test_manual_group_exposes_safe_deeplink_and_confirmation():
 def test_order_list_opens_order_id():
     markup = orders_keyboard([order("draft")])
     assert "order:open:7" in callbacks(markup)
+
+
+
+def test_draft_order_has_cancel_action():
+    values = callbacks(order_detail_keyboard(order("draft"), []))
+    assert "order:cancel:7" in values
+
+
+def test_started_checkout_does_not_show_local_cancel():
+    values = callbacks(order_detail_keyboard(order("awaiting_manual_checkout"), []))
+    assert "order:cancel:7" not in values
