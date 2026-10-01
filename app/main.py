@@ -1,13 +1,13 @@
 import asyncio
 from html import escape
 
-from aiogram import Bot, CallbackQuery, Dispatcher, F
+from aiogram import Bot, Dispatcher, F
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import BotCommand, Message
+from aiogram.types import BotCommand, CallbackQuery, Message
 
 from app.catalog import get_node
 from app.config import settings
