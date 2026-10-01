@@ -66,3 +66,16 @@ def test_deeplink_cancel_never_claims_remote_cancellation():
     )
     assert result.status == "unknown"
     assert result.error
+
+
+
+def test_http_checkout_refuses_missing_delivery_before_network():
+    adapter = GenericHttpCheckoutAdapter(
+        HttpCheckoutConfig(
+            provider_name="Store",
+            base_url="https://example.test",
+        )
+    )
+    result = asyncio.run(adapter.create_checkout(request()))
+    assert result.status == "failed"
+    assert result.error == "delivery_required"
