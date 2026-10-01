@@ -171,45 +171,55 @@ async def open_catalog_for_saved_vehicle(message: Message, state: FSMContext) ->
     )
 
 
-async def search_offers(vehicle: Vehicle | None, query: str):
-    provider_vehicle = vehicle or Vehicle("Автомобиль", "не выбран", 0, None)
-    offers = []
-    for provider in providers:
-        offers.extend(await provider.search(provider_vehicle, query))
-    return rank_offers(offers)
-
-
 async def send_search_results(
     message: Message,
+    state: FSMContext,
     vehicle: Vehicle | None,
     query: str,
     parent_id: str | None = None,
     compatibility_note: str | None = None,
 ) -> None:
-    ranked = await search_offers(vehicle, query)
-    if not ranked:
+    candidates = await search_service.parts(vehicle, query)
+    if not candidates:
         await message.answer(
             "По этому запросу предложений пока нет.",
             reply_markup=main_menu(vehicle is not None),
         )
         return
 
-    body = (
-        offer_text("⭐ Лучший баланс", ranked["best"]) + "\n\n"
-        + offer_text("💰 Самый дешёвый", ranked["cheapest"]) + "\n\n"
-        + offer_text("🚚 Самый быстрый", ranked["fastest"])
+    visible = candidates[:5]
+    await state.update_data(
+        last_parts=[serialize_candidate(item) for item in visible],
+        last_query=query,
+        last_parent_id=parent_id,
+        last_vehicle=(
+            {
+                "brand": vehicle.brand,
+                "model": vehicle.model,
+                "year": vehicle.year,
+                "vin": vehicle.vin,
+            }
+            if vehicle
+            else None
+        ),
+        last_compatibility_note=compatibility_note,
+    )
+
+    vehicle_block = f"{vehicle_summary(vehicle)}\n\n" if vehicle else ""
+    body = "\n\n".join(
+        candidate_text(index + 1, candidate)
+        for index, candidate in enumerate(visible)
     )
     note = compatibility_note or "Данные и цены пока демонстрационные."
 
-    vehicle_block = f"{vehicle_summary(vehicle)}\n\n" if vehicle else ""
     await message.answer(
         f"{vehicle_block}"
-        f"Запрос: <b>{escape(query)}</b>\n\n"
+        f"Запрос: <b>{escape(query)}</b>\n"
+        f"Найдено вариантов: <b>{len(candidates)}</b>\n\n"
         f"{body}\n\n"
         f"<i>{escape(note)}</i>",
-        reply_markup=results_keyboard(parent_id),
+        reply_markup=parts_results_keyboard(visible, parent_id),
     )
-
 
 async def start_search(
     message: Message,
