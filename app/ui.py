@@ -998,3 +998,23 @@ def order_detail_keyboard(
         InlineKeyboardButton(text="← К заказам", callback_data="order:list")
     ])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+
+def external_cancel_confirm_keyboard(order_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="Да, запросить отмену",
+                    callback_data=f"order:cancel_external_confirm:{order_id}",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="Нет, вернуться",
+                    callback_data=f"order:open:{order_id}",
+                )
+            ],
+        ]
+    )
