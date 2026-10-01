@@ -13,6 +13,7 @@ from app.catalog import get_node
 from app.config import settings
 from app.db import add_favorite, delete_vehicle, get_search_history_item, get_vehicle, init_db, list_favorites, list_recent_searches, list_vehicles, record_search, remove_favorite, save_vehicle, set_active_vehicle, set_vehicle_modification
 from app.domain import Vehicle
+from app.fitment import DemoFitmentCatalog
 from app.providers import AutodocProvider, ExistProvider, MockProvider
 from app.query_parser import parse_search_query
 from app.ui import (
@@ -73,6 +74,7 @@ search_service = PartsSearchService(
     providers,
     cache_ttl_seconds=app_settings.search_cache_ttl_seconds,
     provider_timeout_seconds=app_settings.provider_timeout_seconds,
+    fitment_catalog=DemoFitmentCatalog(),
 )
 dp = Dispatcher()
 
