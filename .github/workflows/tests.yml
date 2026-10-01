@@ -63,7 +63,7 @@ jobs:
           conn = sqlite3.connect("smoke.db")
           revision = conn.execute("SELECT version_num FROM alembic_version").fetchone()
           conn.close()
-          assert revision == ("20261001_0001",), revision
+          assert revision == ("20261001_0002",), revision
           PY
 
       - name: PostgreSQL database smoke test
