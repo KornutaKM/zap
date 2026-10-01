@@ -974,6 +974,7 @@ def order_detail_keyboard(
     if any(group.external_order_id for group in groups) and order.status not in {
         "cancelled",
         "completed",
+        "cancel_pending",
     }:
         rows.append([
             InlineKeyboardButton(
