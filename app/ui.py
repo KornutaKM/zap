@@ -9,7 +9,7 @@ from aiogram.types import (
 
 from app.catalog import get_children, get_node
 from app.domain import FavoritePart, Offer, PartCandidate, SavedPurchaseQuote, SearchHistoryItem, ShoppingListItem, Vehicle
-from app.procurement import PurchasePlan
+from app.procurement import PurchasePlan, PurchasePlanComparison
 from app.service_kits import BuiltKit, SERVICE_KITS
 from app.vehicle_catalog import VehicleGeneration
 from app.work_orders import WORK_PACKAGES
@@ -647,9 +647,42 @@ def saved_quote_keyboard(
             break
 
     rows.append([
+        InlineKeyboardButton(text="🔄 Пересчитать сейчас", callback_data=f"quote:refresh:{quote_id}")
+    ])
+    rows.append([
         InlineKeyboardButton(text="🗑 Удалить расчёт", callback_data=f"quote:delete:{quote_id}")
     ])
     rows.append([
         InlineKeyboardButton(text="← К расчётам", callback_data="quote:list")
     ])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+
+def purchase_comparison_text(
+    comparison: PurchasePlanComparison,
+    current: PurchasePlan,
+) -> str:
+    saved = f"{comparison.saved_total:,.0f}".replace(",", " ")
+    now = f"{comparison.current_total:,.0f}".replace(",", " ")
+    delta = f"{abs(comparison.delta):,.0f}".replace(",", " ")
+    percent = f"{abs(comparison.delta_percent):.1f}"
+
+    if comparison.delta < 0:
+        direction = f"дешевле на <b>{delta} ₽</b> ({percent}%)"
+    elif comparison.delta > 0:
+        direction = f"дороже на <b>{delta} ₽</b> ({percent}%)"
+    else:
+        direction = "без изменения"
+
+    return (
+        "<b>Пересчёт сохранённого плана</b>\n\n"
+        f"Было: <b>{saved} ₽</b>\n"
+        f"Сейчас: <b>{now} ₽</b>\n"
+        f"Изменение: {direction}\n\n"
+        f"Магазинов: {comparison.saved_provider_count} → "
+        f"{comparison.current_provider_count}\n"
+        f"Срок до: {comparison.saved_max_delivery_days} → "
+        f"{comparison.current_max_delivery_days} дн.\n\n"
+        f"Текущая стратегия: <b>{escape(current.title)}</b>"
+    )
