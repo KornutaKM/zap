@@ -28,10 +28,14 @@ tables = {
 }
 conn.close()
 
-assert revision == ("20261001_0001",), revision
+assert revision == ("20261001_0002",), revision
 assert "garage_vehicles" in tables
 assert "saved_purchase_quotes" in tables
 assert "price_history" in tables
+assert "orders" in tables
+assert "order_provider_groups" in tables
+assert "order_lines" in tables
+assert "order_events" in tables
 """
     env = os.environ.copy()
     env.pop("BOT_TOKEN", None)
