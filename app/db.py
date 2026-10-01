@@ -1,9 +1,9 @@
-from sqlalchemy import BigInteger, Boolean, Integer, String, select, update
+from sqlalchemy import BigInteger, Boolean, DateTime, Integer, String, delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 from app.config import settings
-from app.domain import Vehicle
+from app.domain import FavoritePart, SearchHistoryItem, Vehicle
 
 
 class Base(DeclarativeBase):
@@ -21,6 +21,26 @@ class VehicleRow(Base):
     model: Mapped[str] = mapped_column(String(120))
     year: Mapped[int] = mapped_column(Integer)
     vin: Mapped[str | None] = mapped_column(String(17), nullable=True)
+
+
+class SearchHistoryRow(Base):
+    __tablename__ = "search_history"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    telegram_user_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    query: Mapped[str] = mapped_column(String(250))
+    vehicle_label: Mapped[str | None] = mapped_column(String(250), nullable=True)
+    created_at: Mapped[object] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class FavoritePartRow(Base):
+    __tablename__ = "favorite_parts"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    telegram_user_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    brand: Mapped[str] = mapped_column(String(120))
+    article: Mapped[str] = mapped_column(String(120))
+    title: Mapped[str] = mapped_column(String(250))
 
 
 class GarageVehicleRow(Base):
@@ -180,5 +200,135 @@ async def delete_vehicle(user_id: int, vehicle_id: int) -> bool:
             if replacement is not None:
                 replacement.is_active = True
 
+        await session.commit()
+        return True
+
+
+
+async def record_search(
+    user_id: int,
+    query: str,
+    vehicle: Vehicle | None,
+) -> None:
+    label = None
+    if vehicle is not None:
+        year_text = f", {vehicle.year}" if vehicle.year > 0 else ""
+        label = f"{vehicle.brand} {vehicle.model}{year_text}"
+
+    async with Session() as session:
+        session.add(
+            SearchHistoryRow(
+                telegram_user_id=user_id,
+                query=query[:250],
+                vehicle_label=label,
+            )
+        )
+        await session.commit()
+
+
+async def list_recent_searches(user_id: int, limit: int = 10) -> list[SearchHistoryItem]:
+    async with Session() as session:
+        rows = (
+            await session.scalars(
+                select(SearchHistoryRow)
+                .where(SearchHistoryRow.telegram_user_id == user_id)
+                .order_by(SearchHistoryRow.id.desc())
+                .limit(limit)
+            )
+        ).all()
+        return [
+            SearchHistoryItem(
+                id=row.id,
+                query=row.query,
+                vehicle_label=row.vehicle_label,
+            )
+            for row in rows
+        ]
+
+
+async def get_search_history_item(
+    user_id: int,
+    history_id: int,
+) -> SearchHistoryItem | None:
+    async with Session() as session:
+        row = await session.scalar(
+            select(SearchHistoryRow).where(
+                SearchHistoryRow.id == history_id,
+                SearchHistoryRow.telegram_user_id == user_id,
+            )
+        )
+        if row is None:
+            return None
+        return SearchHistoryItem(
+            id=row.id,
+            query=row.query,
+            vehicle_label=row.vehicle_label,
+        )
+
+
+async def add_favorite(
+    user_id: int,
+    brand: str,
+    article: str,
+    title: str,
+) -> FavoritePart:
+    async with Session() as session:
+        row = await session.scalar(
+            select(FavoritePartRow).where(
+                FavoritePartRow.telegram_user_id == user_id,
+                FavoritePartRow.brand == brand,
+                FavoritePartRow.article == article,
+            )
+        )
+        if row is None:
+            row = FavoritePartRow(
+                telegram_user_id=user_id,
+                brand=brand,
+                article=article,
+                title=title,
+            )
+            session.add(row)
+            await session.commit()
+            await session.refresh(row)
+
+        return FavoritePart(
+            id=row.id,
+            brand=row.brand,
+            article=row.article,
+            title=row.title,
+        )
+
+
+async def list_favorites(user_id: int) -> list[FavoritePart]:
+    async with Session() as session:
+        rows = (
+            await session.scalars(
+                select(FavoritePartRow)
+                .where(FavoritePartRow.telegram_user_id == user_id)
+                .order_by(FavoritePartRow.id.desc())
+            )
+        ).all()
+        return [
+            FavoritePart(
+                id=row.id,
+                brand=row.brand,
+                article=row.article,
+                title=row.title,
+            )
+            for row in rows
+        ]
+
+
+async def remove_favorite(user_id: int, favorite_id: int) -> bool:
+    async with Session() as session:
+        row = await session.scalar(
+            select(FavoritePartRow).where(
+                FavoritePartRow.id == favorite_id,
+                FavoritePartRow.telegram_user_id == user_id,
+            )
+        )
+        if row is None:
+            return False
+        await session.delete(row)
         await session.commit()
         return True
