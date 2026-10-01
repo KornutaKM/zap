@@ -158,6 +158,31 @@ class OrderEvent:
 
 
 @dataclass(slots=True, frozen=True)
+class OrderCase:
+    id: int
+    order_id: int
+    telegram_user_id: int
+    case_type: str
+    status: str
+    priority: str
+    summary: str
+    assigned_operator_user_id: int | None = None
+    resolution: str | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
+@dataclass(slots=True, frozen=True)
+class OrderCaseNote:
+    id: int
+    case_id: int
+    author_user_id: int | None
+    author_role: str
+    body: str
+    created_at: str | None = None
+
+
+@dataclass(slots=True, frozen=True)
 class Offer:
     provider: str
     brand: str
