@@ -1479,6 +1479,8 @@ async def list_orders_for_status_monitor(
         "awaiting_manual_checkout",
         "partially_placed",
         "placed",
+        "cancel_pending",
+        "cancel_requires_attention",
     ),
     limit: int = 200,
 ) -> list[CustomerOrder]:
