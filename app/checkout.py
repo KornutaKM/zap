@@ -45,6 +45,48 @@ class CheckoutRequest:
     delivery: CheckoutDelivery | None = None
 
 
+def build_checkout_payload(
+    request: CheckoutRequest,
+    *,
+    extra_payload: dict | None = None,
+) -> dict:
+    if request.recipient is None or request.delivery is None:
+        raise ValueError("delivery_required")
+
+    return {
+        "idempotency_key": f"zap:{request.order_id}:{request.group_id}",
+        "order_id": request.order_id,
+        "group_id": request.group_id,
+        "provider": request.provider,
+        "currency": "RUB",
+        "total": str(request.total),
+        "recipient": {
+            "full_name": request.recipient.full_name,
+            "phone": request.recipient.phone,
+            "email": request.recipient.email,
+        },
+        "delivery_address": {
+            "country": request.delivery.country,
+            "city": request.delivery.city,
+            "address_line1": request.delivery.address_line1,
+            "address_line2": request.delivery.address_line2,
+            "postal_code": request.delivery.postal_code,
+            "comment": request.delivery.comment,
+        },
+        "provider_context": dict(extra_payload or {}),
+        "items": [
+            {
+                "brand": line.brand,
+                "article": line.article,
+                "title": line.title,
+                "quantity": line.quantity,
+                "unit_price": str(line.unit_price),
+            }
+            for line in request.lines
+        ],
+    }
+
+
 @dataclass(frozen=True, slots=True)
 class CheckoutResult:
     status: str
@@ -155,45 +197,17 @@ class GenericHttpCheckoutAdapter:
             self.config.base_url.rstrip("/") + "/",
             self.config.create_path.lstrip("/"),
         )
-        if request.recipient is None or request.delivery is None:
+        try:
+            payload = build_checkout_payload(
+                request,
+                extra_payload=self.config.extra_payload,
+            )
+        except ValueError as exc:
             return CheckoutResult(
                 status="failed",
                 mode="api",
-                error="delivery_required",
+                error=str(exc),
             )
-
-        payload = {
-            "idempotency_key": f"zap:{request.order_id}:{request.group_id}",
-            "order_id": request.order_id,
-            "group_id": request.group_id,
-            "provider": request.provider,
-            "currency": "RUB",
-            "total": str(request.total),
-            "recipient": {
-                "full_name": request.recipient.full_name,
-                "phone": request.recipient.phone,
-                "email": request.recipient.email,
-            },
-            "delivery_address": {
-                "country": request.delivery.country,
-                "city": request.delivery.city,
-                "address_line1": request.delivery.address_line1,
-                "address_line2": request.delivery.address_line2,
-                "postal_code": request.delivery.postal_code,
-                "comment": request.delivery.comment,
-            },
-            "provider_context": dict(self.config.extra_payload or {}),
-            "items": [
-                {
-                    "brand": line.brand,
-                    "article": line.article,
-                    "title": line.title,
-                    "quantity": line.quantity,
-                    "unit_price": str(line.unit_price),
-                }
-                for line in request.lines
-            ],
-        }
 
         try:
             timeout = aiohttp.ClientTimeout(total=max(1.0, self.config.timeout_seconds))
