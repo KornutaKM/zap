@@ -12,6 +12,7 @@ from app.domain import FavoritePart, Offer, PartCandidate, SearchHistoryItem, Sh
 from app.procurement import PurchasePlan
 from app.service_kits import BuiltKit, SERVICE_KITS
 from app.vehicle_catalog import VehicleGeneration
+from app.work_orders import WORK_PACKAGES
 from app.vehicle_resolver import VehicleModification
 
 BTN_SEARCH = "🔎 Найти запчасть"
@@ -22,6 +23,7 @@ BTN_FAVORITES = "⭐ Избранное"
 BTN_HISTORY = "🕘 История"
 BTN_ALERTS = "🔔 Цены"
 BTN_SHOPPING = "🛒 Закупка"
+BTN_WORKS = "🧰 Работы"
 BTN_ADD_CAR = "🚗 Добавить автомобиль"
 BTN_MODEL_CATALOG = "📚 Каталог по модели"
 BTN_ARTICLE = "🔎 Найти по артикулу"
@@ -32,16 +34,17 @@ def main_menu(has_vehicle: bool) -> ReplyKeyboardMarkup:
     if has_vehicle:
         rows = [
             [KeyboardButton(text=BTN_SEARCH), KeyboardButton(text=BTN_CATALOG)],
-            [KeyboardButton(text=BTN_SERVICE), KeyboardButton(text=BTN_GARAGE)],
+            [KeyboardButton(text=BTN_SERVICE), KeyboardButton(text=BTN_WORKS)],
+            [KeyboardButton(text=BTN_GARAGE), KeyboardButton(text=BTN_SHOPPING)],
             [KeyboardButton(text=BTN_FAVORITES), KeyboardButton(text=BTN_HISTORY)],
-            [KeyboardButton(text=BTN_SHOPPING), KeyboardButton(text=BTN_ALERTS)],
+            [KeyboardButton(text=BTN_ALERTS)],
         ]
     else:
         rows = [
             [KeyboardButton(text=BTN_ADD_CAR)],
             [KeyboardButton(text=BTN_MODEL_CATALOG), KeyboardButton(text=BTN_ARTICLE)],
-            [KeyboardButton(text=BTN_FAVORITES), KeyboardButton(text=BTN_HISTORY)],
-            [KeyboardButton(text=BTN_SHOPPING), KeyboardButton(text=BTN_ALERTS)],
+            [KeyboardButton(text=BTN_SHOPPING), KeyboardButton(text=BTN_FAVORITES)],
+            [KeyboardButton(text=BTN_HISTORY), KeyboardButton(text=BTN_ALERTS)],
         ]
 
     return ReplyKeyboardMarkup(
@@ -567,4 +570,24 @@ def purchase_plans_keyboard(plans: list[PurchasePlan]) -> InlineKeyboardMarkup:
         for index, plan in enumerate(plans[:5])
     ]
     rows.append([InlineKeyboardButton(text="← К списку", callback_data="shop:back")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+
+def work_packages_keyboard() -> InlineKeyboardMarkup:
+    rows = [
+        [
+            InlineKeyboardButton(
+                text=package.title,
+                callback_data=f"work:pkg:{package.id}",
+            )
+        ]
+        for package in WORK_PACKAGES.values()
+    ]
+    rows.append([
+        InlineKeyboardButton(
+            text="✍️ Свой список работ",
+            callback_data="work:custom",
+        )
+    ])
     return InlineKeyboardMarkup(inline_keyboard=rows)
