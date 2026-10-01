@@ -4,12 +4,15 @@ from decimal import Decimal
 import pytest
 
 from app.checkout import (
+    CheckoutDelivery,
     CheckoutLine,
+    CheckoutRecipient,
     CheckoutRegistry,
     CheckoutRequest,
     DeeplinkCheckoutAdapter,
     GenericHttpCheckoutAdapter,
     HttpCheckoutConfig,
+    build_checkout_payload,
     parse_checkout_extra_payload,
 )
 
@@ -79,3 +82,39 @@ def test_http_checkout_refuses_missing_delivery_before_network():
     result = asyncio.run(adapter.create_checkout(request()))
     assert result.status == "failed"
     assert result.error == "delivery_required"
+
+
+
+def test_checkout_payload_contains_delivery_and_isolates_provider_context():
+    req = CheckoutRequest(
+        order_id=10,
+        group_id=20,
+        provider="Store",
+        total=Decimal("1500"),
+        lines=(CheckoutLine("ATE", "123", "Pads", 1, Decimal("1000")),),
+        recipient=CheckoutRecipient(
+            full_name="Иван Иванов",
+            phone="+79991234567",
+            email="ivan@example.com",
+        ),
+        delivery=CheckoutDelivery(
+            country="Россия",
+            city="Москва",
+            address_line1="ул. Примерная, 1",
+            postal_code="101000",
+        ),
+    )
+    payload = build_checkout_payload(
+        req,
+        extra_payload={
+            "warehouse": "msk",
+            "total": "cannot override root total",
+        },
+    )
+    assert payload["idempotency_key"] == "zap:10:20"
+    assert payload["total"] == "1500"
+    assert payload["recipient"]["phone"] == "+79991234567"
+    assert payload["delivery_address"]["city"] == "Москва"
+    assert payload["provider_context"]["warehouse"] == "msk"
+    assert payload["provider_context"]["total"] == "cannot override root total"
+    assert payload["total"] != payload["provider_context"]["total"]
