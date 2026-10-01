@@ -13,6 +13,7 @@ from app.catalog import get_node
 from app.config import settings
 from app.db import add_favorite, delete_vehicle, get_search_history_item, get_vehicle, init_db, list_favorites, list_recent_searches, list_vehicles, record_search, remove_favorite, save_vehicle, set_active_vehicle, set_vehicle_modification
 from app.domain import Vehicle
+from app.external_provider import GenericHttpProvider, HttpProviderConfig
 from app.fitment import DemoFitmentCatalog
 from app.providers import AutodocProvider, ExistProvider, MockProvider
 from app.query_parser import parse_search_query
@@ -70,6 +71,21 @@ class CatalogFlow(StatesGroup):
 
 app_settings = settings()
 providers = [MockProvider(), ExistProvider(), AutodocProvider()]
+
+if app_settings.external_provider_enabled and app_settings.external_provider_base_url:
+    providers.append(
+        GenericHttpProvider(
+            HttpProviderConfig(
+                name=app_settings.external_provider_name,
+                base_url=app_settings.external_provider_base_url,
+                search_path=app_settings.external_provider_search_path,
+                api_key=app_settings.external_provider_api_key,
+                api_key_header=app_settings.external_provider_api_key_header,
+                auth_scheme=app_settings.external_provider_auth_scheme,
+                allow_http=app_settings.external_provider_allow_http,
+            )
+        )
+    )
 search_service = PartsSearchService(
     providers,
     cache_ttl_seconds=app_settings.search_cache_ttl_seconds,
