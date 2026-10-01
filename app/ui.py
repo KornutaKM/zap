@@ -8,7 +8,7 @@ from aiogram.types import (
 )
 
 from app.catalog import get_children, get_node
-from app.domain import CustomerOrder, FavoritePart, Offer, OrderEvent, OrderLine, PartCandidate, SavedPurchaseQuote, SearchHistoryItem, ShoppingListItem, SupplierOrderGroup, Vehicle
+from app.domain import CustomerOrder, DeliveryProfile, FavoritePart, Offer, OrderEvent, OrderLine, PartCandidate, SavedPurchaseQuote, SearchHistoryItem, ShoppingListItem, SupplierOrderGroup, Vehicle
 from app.procurement import PurchasePlan, PurchasePlanComparison
 from app.service_kits import BuiltKit, SERVICE_KITS
 from app.vehicle_catalog import VehicleGeneration
@@ -26,6 +26,8 @@ BTN_SHOPPING = "🛒 Закупка"
 BTN_WORKS = "🧰 Работы"
 BTN_QUOTES = "📄 Расчёты"
 BTN_ORDERS = "📦 Заказы"
+BTN_DELIVERY = "👤 Доставка"
+BTN_SKIP = "Пропустить"
 BTN_ADD_CAR = "🚗 Добавить автомобиль"
 BTN_MODEL_CATALOG = "📚 Каталог по модели"
 BTN_ARTICLE = "🔎 Найти по артикулу"
@@ -40,7 +42,7 @@ def main_menu(has_vehicle: bool) -> ReplyKeyboardMarkup:
             [KeyboardButton(text=BTN_GARAGE), KeyboardButton(text=BTN_SHOPPING)],
             [KeyboardButton(text=BTN_FAVORITES), KeyboardButton(text=BTN_HISTORY)],
             [KeyboardButton(text=BTN_QUOTES), KeyboardButton(text=BTN_ORDERS)],
-            [KeyboardButton(text=BTN_ALERTS)],
+            [KeyboardButton(text=BTN_DELIVERY), KeyboardButton(text=BTN_ALERTS)],
         ]
     else:
         rows = [
@@ -48,7 +50,8 @@ def main_menu(has_vehicle: bool) -> ReplyKeyboardMarkup:
             [KeyboardButton(text=BTN_MODEL_CATALOG), KeyboardButton(text=BTN_ARTICLE)],
             [KeyboardButton(text=BTN_SHOPPING), KeyboardButton(text=BTN_FAVORITES)],
             [KeyboardButton(text=BTN_HISTORY), KeyboardButton(text=BTN_QUOTES)],
-            [KeyboardButton(text=BTN_ORDERS), KeyboardButton(text=BTN_ALERTS)],
+            [KeyboardButton(text=BTN_ORDERS), KeyboardButton(text=BTN_DELIVERY)],
+            [KeyboardButton(text=BTN_ALERTS)],
         ]
 
     return ReplyKeyboardMarkup(
@@ -63,6 +66,54 @@ def cancel_menu() -> ReplyKeyboardMarkup:
         keyboard=[[KeyboardButton(text=BTN_CANCEL)]],
         resize_keyboard=True,
         one_time_keyboard=True,
+    )
+
+
+def optional_input_menu() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text=BTN_SKIP)],
+            [KeyboardButton(text=BTN_CANCEL)],
+        ],
+        resize_keyboard=True,
+        one_time_keyboard=True,
+    )
+
+
+def delivery_profile_text(profile: DeliveryProfile) -> str:
+    email = escape(profile.email) if profile.email else "—"
+    postal = escape(profile.postal_code) if profile.postal_code else "—"
+    second = (
+        f"\n{escape(profile.address_line2)}"
+        if profile.address_line2
+        else ""
+    )
+    return (
+        "<b>Данные доставки</b>\n\n"
+        f"Получатель: <b>{escape(profile.full_name)}</b>\n"
+        f"Телефон: <code>{escape(profile.phone)}</code>\n"
+        f"Email: {email}\n"
+        f"Страна: {escape(profile.country)}\n"
+        f"Город: {escape(profile.city)}\n"
+        f"Адрес: {escape(profile.address_line1)}{second}\n"
+        f"Индекс: {postal}"
+    )
+
+
+def delivery_profile_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="✏️ Изменить",
+                    callback_data="delivery:edit",
+                ),
+                InlineKeyboardButton(
+                    text="🗑 Удалить",
+                    callback_data="delivery:delete",
+                ),
+            ]
+        ]
     )
 
 
@@ -742,11 +793,14 @@ ORDER_STATUS_LABELS = {
     "ready": "Готов к оформлению",
     "price_changed": "Цена изменилась",
     "needs_attention": "Требует внимания",
+    "needs_delivery": "Нужны данные доставки",
     "checkout_pending": "Ожидает поставщика",
     "awaiting_manual_checkout": "Нужно оформить вручную",
     "partially_placed": "Оформлен частично",
     "placed": "Оформлен",
     "completed": "Завершён",
+    "cancel_pending": "Отмена запрошена",
+    "cancel_requires_attention": "Отмена требует внимания",
     "cancelled": "Отменён",
 }
 
@@ -785,11 +839,20 @@ def order_detail_text(
     for line in lines:
         lines_by_group.setdefault(line.group_id, []).append(line)
 
+    delivery_snapshot = order.delivery_snapshot or {}
+    delivery_line = (
+        f"{escape(str(delivery_snapshot.get('full_name')))} · "
+        f"{escape(str(delivery_snapshot.get('city')))}"
+        if delivery_snapshot.get("full_name") and delivery_snapshot.get("city")
+        else "не заполнена"
+    )
+
     text_lines = [
         f"<b>Заказ #{order.id}</b>",
         f"Статус: <b>{escape(order_status_label(order.status))}</b>",
         f"Детали: {item_total} ₽ · доставка: {shipping} ₽",
         f"Итого: <b>{total} ₽</b>",
+        f"Получатель: {delivery_line}",
         "",
         "<b>Поставщики</b>",
     ]
@@ -848,7 +911,25 @@ def order_detail_keyboard(
             )
         ])
 
-    if order.status == "ready":
+    if order.status in {
+        "draft",
+        "ready",
+        "price_changed",
+        "needs_attention",
+        "needs_delivery",
+    }:
+        rows.append([
+            InlineKeyboardButton(
+                text=(
+                    "👤 Обновить доставку"
+                    if order.delivery_snapshot
+                    else "👤 Добавить доставку"
+                ),
+                callback_data=f"order:delivery:{order.id}",
+            )
+        ])
+
+    if order.status == "ready" and order.delivery_snapshot:
         rows.append([
             InlineKeyboardButton(
                 text="🚀 Перейти к оформлению",
@@ -856,7 +937,13 @@ def order_detail_keyboard(
             )
         ])
 
-    if order.status in {"draft", "ready", "price_changed", "needs_attention"}:
+    if order.status in {
+        "draft",
+        "ready",
+        "price_changed",
+        "needs_attention",
+        "needs_delivery",
+    }:
         rows.append([
             InlineKeyboardButton(
                 text="🗑 Отменить заказ",
@@ -869,11 +956,24 @@ def order_detail_keyboard(
         "awaiting_manual_checkout",
         "partially_placed",
         "placed",
+        "cancel_pending",
+        "cancel_requires_attention",
     }:
         rows.append([
             InlineKeyboardButton(
                 text="🔄 Обновить статус",
                 callback_data=f"order:refresh:{order.id}",
+            )
+        ])
+
+    if any(group.external_order_id for group in groups) and order.status not in {
+        "cancelled",
+        "completed",
+    }:
+        rows.append([
+            InlineKeyboardButton(
+                text="🛑 Отменить у поставщика",
+                callback_data=f"order:cancel_external:{order.id}",
             )
         ])
 
