@@ -230,3 +230,42 @@ def built_kit_keyboard() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="📚 Каталог ТО", callback_data="cat:service")],
         ]
     )
+
+
+def garage_keyboard(
+    vehicles: list[Vehicle],
+    active_id: int | None,
+) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    for vehicle in vehicles:
+        marker = "✅ " if vehicle.id == active_id else ""
+        rows.append([
+            InlineKeyboardButton(
+                text=f"{marker}{vehicle.brand} {vehicle.model} · {vehicle.year}",
+                callback_data=f"garage:set:{vehicle.id}",
+            )
+        ])
+
+    rows.append([InlineKeyboardButton(text="➕ Добавить автомобиль", callback_data="garage:add")])
+    if active_id is not None:
+        rows.append([
+            InlineKeyboardButton(
+                text="🗑 Удалить активный автомобиль",
+                callback_data=f"garage:delete:{active_id}",
+            )
+        ])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def delete_vehicle_confirm_keyboard(vehicle_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="Да, удалить",
+                    callback_data=f"garage:confirmdel:{vehicle_id}",
+                ),
+                InlineKeyboardButton(text="Отмена", callback_data="garage:canceldelete"),
+            ]
+        ]
+    )
