@@ -487,6 +487,77 @@ async def search_query(message: Message, state: FSMContext):
     await message.answer("Что дальше?", reply_markup=main_menu(saved_vehicle is not None))
 
 
+@dp.callback_query(F.data.startswith("part:"))
+async def part_detail_callback(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    if callback.message is None:
+        return
+
+    try:
+        index = int((callback.data or "").split(":", 1)[1])
+    except (ValueError, IndexError):
+        await callback.message.answer("Не удалось открыть карточку детали.")
+        return
+
+    data = await state.get_data()
+    items = data.get("last_parts") or []
+    if index < 0 or index >= len(items):
+        await callback.message.answer("Эта выдача устарела. Выполните поиск ещё раз.")
+        return
+
+    candidate = deserialize_candidate(items[index])
+    parent_id = data.get("last_parent_id")
+    note = data.get("last_compatibility_note") or "Данные и цены пока демонстрационные."
+
+    await callback.message.edit_text(
+        f"{candidate_detail_text(candidate)}\n\n"
+        f"<i>{escape(note)}</i>",
+        reply_markup=part_detail_keyboard(index, parent_id),
+    )
+
+
+@dp.callback_query(F.data == "partlist:back")
+async def part_list_back_callback(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    if callback.message is None:
+        return
+
+    data = await state.get_data()
+    raw_items = data.get("last_parts") or []
+    if not raw_items:
+        await callback.message.answer("Эта выдача устарела. Выполните поиск ещё раз.")
+        return
+
+    candidates = [deserialize_candidate(item) for item in raw_items]
+    query = data.get("last_query") or "запчасть"
+    parent_id = data.get("last_parent_id")
+    vehicle_data = data.get("last_vehicle")
+    note = data.get("last_compatibility_note") or "Данные и цены пока демонстрационные."
+
+    vehicle = None
+    if vehicle_data:
+        vehicle = Vehicle(
+            vehicle_data["brand"],
+            vehicle_data["model"],
+            vehicle_data["year"],
+            vehicle_data.get("vin"),
+        )
+
+    vehicle_block = f"{vehicle_summary(vehicle)}\n\n" if vehicle else ""
+    body = "\n\n".join(
+        candidate_text(index + 1, candidate)
+        for index, candidate in enumerate(candidates)
+    )
+
+    await callback.message.edit_text(
+        f"{vehicle_block}"
+        f"Запрос: <b>{escape(query)}</b>\n\n"
+        f"{body}\n\n"
+        f"<i>{escape(note)}</i>",
+        reply_markup=parts_results_keyboard(candidates, parent_id),
+    )
+
+
 @dp.callback_query(F.data == "action:search")
 async def callback_new_search(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
