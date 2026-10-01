@@ -303,3 +303,53 @@ def deserialize_purchase_plan(data: dict) -> PurchasePlan:
         provider_count=int(data["provider_count"]),
         max_delivery_days=int(data["max_delivery_days"]),
     )
+
+
+
+@dataclass(frozen=True, slots=True)
+class PurchasePlanComparison:
+    saved_total: Decimal
+    current_total: Decimal
+    delta: Decimal
+    delta_percent: Decimal
+    saved_provider_count: int
+    current_provider_count: int
+    saved_max_delivery_days: int
+    current_max_delivery_days: int
+
+
+def requests_from_plan(plan: PurchasePlan) -> list[PurchaseRequest]:
+    result: list[PurchaseRequest] = []
+    seen: set[tuple[str, str]] = set()
+    for choice in plan.choices:
+        key = (
+            choice.request.brand.casefold(),
+            choice.request.article.casefold(),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(choice.request)
+    return result
+
+
+def compare_purchase_plans(
+    saved: PurchasePlan,
+    current: PurchasePlan,
+) -> PurchasePlanComparison:
+    delta = current.grand_total - saved.grand_total
+    delta_percent = (
+        (delta / saved.grand_total) * Decimal("100")
+        if saved.grand_total
+        else Decimal("0")
+    )
+    return PurchasePlanComparison(
+        saved_total=saved.grand_total,
+        current_total=current.grand_total,
+        delta=delta,
+        delta_percent=delta_percent,
+        saved_provider_count=saved.provider_count,
+        current_provider_count=current.provider_count,
+        saved_max_delivery_days=saved.max_delivery_days,
+        current_max_delivery_days=current.max_delivery_days,
+    )
